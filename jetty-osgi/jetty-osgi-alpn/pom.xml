@@ -2,7 +2,7 @@
   <parent>
     <groupId>org.eclipse.jetty.osgi</groupId>
     <artifactId>jetty-osgi-project</artifactId>
-    <version>9.3.8-SNAPSHOT</version>
+    <version>9.4.0-SNAPSHOT</version>
   </parent>
   <modelVersion>4.0.0</modelVersion>
   <artifactId>jetty-osgi-alpn</artifactId>
@@ -16,7 +16,6 @@
       <plugin>
         <groupId>org.codehaus.mojo</groupId>
         <artifactId>build-helper-maven-plugin</artifactId>
-        <version>1.7</version>
         <executions>
           <execution>
             <id>parse-version</id>
@@ -25,6 +24,7 @@
             </goals>
             <configuration>
               <versionString>${alpn.api.version}</versionString>
+              <propertyPrefix>alpn</propertyPrefix>
             </configuration>
           </execution>
         </executions>
@@ -37,7 +37,7 @@
               <Bundle-SymbolicName>${bundle-symbolic-name};singleton:=true</Bundle-SymbolicName>
               <Bundle-Name>Jetty OSGi ALPN Fragment</Bundle-Name>
               <Import-Package>!javax.*;!org.eclipse.jetty.*</Import-Package>
-              <Export-Package>org.eclipse.jetty.alpn;version="${parsedVersion.majorVersion}.${parsedVersion.minorVersion}.${parsedVersion.incrementalVersion}"</Export-Package>
+              <Export-Package>org.eclipse.jetty.alpn;version="${alpn.majorVersion}.${alpn.minorVersion}.${alpn.incrementalVersion}"</Export-Package>
               <Fragment-Host>system.bundle;extension:=framework</Fragment-Host>
             </instructions>
         </configuration>

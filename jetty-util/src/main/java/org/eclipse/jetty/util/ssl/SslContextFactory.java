@@ -22,7 +22,6 @@ import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
-import java.net.MalformedURLException;
 import java.security.KeyStore;
 import java.security.SecureRandom;
 import java.security.Security;
@@ -60,6 +59,7 @@ import javax.net.ssl.SSLPeerUnverifiedException;
 import javax.net.ssl.SSLServerSocket;
 import javax.net.ssl.SSLServerSocketFactory;
 import javax.net.ssl.SSLSession;
+import javax.net.ssl.SSLSessionContext;
 import javax.net.ssl.SSLSocket;
 import javax.net.ssl.SSLSocketFactory;
 import javax.net.ssl.StandardConstants;
@@ -209,9 +209,9 @@ public class SslContextFactory extends AbstractLifeCycle
     /** Set to true to enable SSL Session caching */
     private boolean _sessionCachingEnabled = true;
     /** SSL session cache size */
-    private int _sslSessionCacheSize;
+    private int _sslSessionCacheSize=-1;
     /** SSL session timeout */
-    private int _sslSessionTimeout;
+    private int _sslSessionTimeout=-1;
 
     /** SSL context */
     private SSLContext _setContext;
@@ -249,10 +249,7 @@ public class SslContextFactory extends AbstractLifeCycle
     {
         setTrustAll(trustAll);
         addExcludeProtocols("SSL", "SSLv2", "SSLv2Hello", "SSLv3");
-        setExcludeCipherSuites(
-                "^.*_RSA_.*_(MD5|SHA|SHA1)$",
-                "SSL_DHE_DSS_WITH_DES_CBC_SHA",
-                "SSL_DHE_DSS_EXPORT_WITH_DES40_CBC_SHA");
+        setExcludeCipherSuites("^.*_(MD5|SHA|SHA1)$");
     }
 
     /**
@@ -387,18 +384,27 @@ public class SslContextFactory extends AbstractLifeCycle
             }
         }
 
+        // Initialize cache
+        SSLSessionContext serverContext=context.getServerSessionContext();
+        if (serverContext!=null)
+        {
+            if (getSslSessionCacheSize()>-1)
+                serverContext.setSessionCacheSize(getSslSessionCacheSize());
+            if (getSslSessionTimeout()>-1)
+            serverContext.setSessionTimeout(getSslSessionTimeout());
+        }
+        
         // select the protocols and ciphers
-        SSLEngine sslEngine=context.createSSLEngine();
-        selectCipherSuites(
-                sslEngine.getEnabledCipherSuites(),
-                sslEngine.getSupportedCipherSuites());
-        selectProtocols(sslEngine.getEnabledProtocols(),sslEngine.getSupportedProtocols());
+        SSLParameters enabled=context.getDefaultSSLParameters();
+        SSLParameters supported=context.getSupportedSSLParameters();
+        selectCipherSuites(enabled.getCipherSuites(),supported.getCipherSuites());
+        selectProtocols(enabled.getProtocols(),supported.getProtocols());
 
         _factory = new Factory(keyStore,trustStore,context);
         if (LOG.isDebugEnabled())
         {
-            LOG.debug("Selected Protocols {} of {}",Arrays.asList(_selectedProtocols),Arrays.asList(sslEngine.getSupportedProtocols()));
-            LOG.debug("Selected Ciphers   {} of {}",Arrays.asList(_selectedCipherSuites),Arrays.asList(sslEngine.getSupportedCipherSuites()));
+            LOG.debug("Selected Protocols {} of {}",Arrays.asList(_selectedProtocols),Arrays.asList(supported.getProtocols()));
+            LOG.debug("Selected Ciphers   {} of {}",Arrays.asList(_selectedCipherSuites),Arrays.asList(supported.getCipherSuites()));
         }
     }
 
@@ -545,7 +551,7 @@ public class SslContextFactory extends AbstractLifeCycle
         {
             _keyStoreResource = Resource.newResource(keyStorePath);
         }
-        catch (MalformedURLException e)
+        catch (Exception e)
         {
             throw new IllegalArgumentException(e);
         }
@@ -621,7 +627,7 @@ public class SslContextFactory extends AbstractLifeCycle
         {
             _trustStoreResource = Resource.newResource(trustStorePath);
         }
-        catch (MalformedURLException e)
+        catch (Exception e)
         {
             throw new IllegalArgumentException(e);
         }
@@ -753,12 +759,12 @@ public class SslContextFactory extends AbstractLifeCycle
         if (password==null)
         {
             if (_keyStoreResource!=null)
-                _keyStorePassword=Password.getPassword(PASSWORD_PROPERTY,null,null);
+                _keyStorePassword= getPassword(PASSWORD_PROPERTY);
             else
                 _keyStorePassword=null;
         }
         else
-            _keyStorePassword = new Password(password);
+            _keyStorePassword = newPassword(password);
     }
 
     /**
@@ -774,12 +780,12 @@ public class SslContextFactory extends AbstractLifeCycle
         if (password==null)
         {
             if (System.getProperty(KEYPASSWORD_PROPERTY)!=null)
-                _keyManagerPassword = Password.getPassword(KEYPASSWORD_PROPERTY,null,null);
+                _keyManagerPassword = getPassword(KEYPASSWORD_PROPERTY);
             else
                 _keyManagerPassword = null;
         }
         else
-            _keyManagerPassword = new Password(password);
+            _keyManagerPassword = newPassword(password);
     }
 
     /**
@@ -797,12 +803,12 @@ public class SslContextFactory extends AbstractLifeCycle
         {
             // Do we need a truststore password?
             if (_trustStoreResource!=null && !_trustStoreResource.equals(_keyStoreResource))
-                _trustStorePassword = Password.getPassword(PASSWORD_PROPERTY,null,null);
+                _trustStorePassword = getPassword(PASSWORD_PROPERTY);
             else
                 _trustStorePassword = null;
         }
         else
-            _trustStorePassword=new Password(password);
+            _trustStorePassword=newPassword(password);
     }
 
     /**
@@ -832,6 +838,16 @@ public class SslContextFactory extends AbstractLifeCycle
     public String getProtocol()
     {
         return _sslProtocol;
+    }
+    
+    /**
+     * Get the password object for the realm
+     * @param realm the realm
+     * @return the Password object
+     */
+    protected Password getPassword(String realm)
+    {
+        return Password.getPassword(realm, null, null);
     }
 
     /**
@@ -1401,14 +1417,20 @@ public class SslContextFactory extends AbstractLifeCycle
     }
 
     /** Set the flag to enable SSL Session caching.
-    * @param enableSessionCaching the value of the flag
-    */
+     * If set to true, then the {@link SSLContext#createSSLEngine(String, int)} method is
+     * used to pass host and port information as a hint for session reuse.  Note that
+     * this is only a hint and session may not be reused. Moreover, the hint is typically
+     * only used on client side implementations and setting this to false does not 
+     * stop a server from accepting an offered session ID to reuse.
+     * @param enableSessionCaching the value of the flag
+     */
     public void setSessionCachingEnabled(boolean enableSessionCaching)
     {
         _sessionCachingEnabled = enableSessionCaching;
     }
 
     /** Get SSL session cache size.
+     * Passed directly to {@link SSLSessionContext#setSessionCacheSize(int)}
      * @return SSL session cache size
      */
     public int getSslSessionCacheSize()
@@ -1416,8 +1438,11 @@ public class SslContextFactory extends AbstractLifeCycle
         return _sslSessionCacheSize;
     }
 
-    /** SEt SSL session cache size.
-     * @param sslSessionCacheSize SSL session cache size to set
+    /** Set SSL session cache size.
+     * <p>Set the max cache size to be set on {@link SSLSessionContext#setSessionCacheSize(int)}
+     * when this factory is started.</p>
+     * @param sslSessionCacheSize SSL session cache size to set. A value  of -1 (default) uses
+     * the JVM default, 0 means unlimited and positive number is a max size.
      */
     public void setSslSessionCacheSize(int sslSessionCacheSize)
     {
@@ -1433,33 +1458,36 @@ public class SslContextFactory extends AbstractLifeCycle
     }
 
     /** Set SSL session timeout.
-     * @param sslSessionTimeout SSL session timeout to set
+     * <p>Set the timeout in seconds to be set on {@link SSLSessionContext#setSessionTimeout(int)}
+     * when this factory is started.</p>
+     * @param sslSessionTimeout SSL session timeout to set in seconds. A value of -1 (default) uses
+     * the JVM default, 0 means unlimited and positive number is a timeout in seconds.
      */
     public void setSslSessionTimeout(int sslSessionTimeout)
     {
         _sslSessionTimeout = sslSessionTimeout;
     }
-
+    
+    /**
+     * Create a new Password object
+     * @param password the password string
+     * @return the new Password object
+     */
+    public Password newPassword(String password)
+    {
+        return new Password(password);
+    }
 
     public SSLServerSocket newSslServerSocket(String host,int port,int backlog) throws IOException
     {
         checkIsStarted();
 
         SSLServerSocketFactory factory = _factory._context.getServerSocketFactory();
-
         SSLServerSocket socket =
             (SSLServerSocket) (host==null ?
                         factory.createServerSocket(port,backlog):
                         factory.createServerSocket(port,backlog,InetAddress.getByName(host)));
-
-        if (getWantClientAuth())
-            socket.setWantClientAuth(getWantClientAuth());
-        if (getNeedClientAuth())
-            socket.setNeedClientAuth(getNeedClientAuth());
-
-        socket.setEnabledCipherSuites(_selectedCipherSuites);
-        socket.setEnabledProtocols(_selectedProtocols);
-
+        socket.setSSLParameters(customize(socket.getSSLParameters()));
         return socket;
     }
 
@@ -1468,17 +1496,8 @@ public class SslContextFactory extends AbstractLifeCycle
         checkIsStarted();
 
         SSLSocketFactory factory = _factory._context.getSocketFactory();
-
         SSLSocket socket = (SSLSocket)factory.createSocket();
-
-        if (getWantClientAuth())
-            socket.setWantClientAuth(getWantClientAuth());
-        if (getNeedClientAuth())
-            socket.setNeedClientAuth(getNeedClientAuth());
-
-        socket.setEnabledCipherSuites(_selectedCipherSuites);
-        socket.setEnabledProtocols(_selectedProtocols);
-
+        socket.setSSLParameters(customize(socket.getSSLParameters()));
         return socket;
     }
 
@@ -1545,31 +1564,41 @@ public class SslContextFactory extends AbstractLifeCycle
         return newSSLEngine(hostName, address.getPort());
     }
 
+    /**
+     * Customize an SslEngine instance with the configuration of this factory,
+     * by calling {@link #customize(SSLParameters)}
+     * @param sslEngine
+     */
     public void customize(SSLEngine sslEngine)
     {
         if (LOG.isDebugEnabled())
             LOG.debug("Customize {}",sslEngine);
 
-        SSLParameters sslParams = sslEngine.getSSLParameters();
+        sslEngine.setSSLParameters(customize(sslEngine.getSSLParameters()));
+    }
+    
+    /**
+     * Customize an SslParameters instance with the configuration of this factory.
+     * @param sslParams The parameters to customize
+     * @return The passed instance of sslParams (returned as a convenience)
+     */
+    public SSLParameters customize(SSLParameters sslParams)
+    {
         sslParams.setEndpointIdentificationAlgorithm(_endpointIdentificationAlgorithm);
         sslParams.setUseCipherSuitesOrder(_useCipherSuitesOrder);
         if (!_certHosts.isEmpty() || !_certWilds.isEmpty())
-        {
-            if (LOG.isDebugEnabled())
-                LOG.debug("Enable SNI matching {}",sslEngine);
             sslParams.setSNIMatchers(Collections.singletonList((SNIMatcher)new AliasSNIMatcher()));
-        }
-        sslParams.setCipherSuites(_selectedCipherSuites);
-        sslParams.setProtocols(_selectedProtocols);
-
+        if (_selectedCipherSuites!=null)
+            sslParams.setCipherSuites(_selectedCipherSuites);
+        if (_selectedProtocols!=null)
+            sslParams.setProtocols(_selectedProtocols);
         if (getWantClientAuth())
             sslParams.setWantClientAuth(true);
         if (getNeedClientAuth())
             sslParams.setNeedClientAuth(true);
-
-        sslEngine.setSSLParameters(sslParams);
+        return sslParams;
     }
-
+    
     public static X509Certificate[] getCertChain(SSLSession sslSession)
     {
         try

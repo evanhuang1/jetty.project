@@ -20,6 +20,7 @@ package org.eclipse.jetty.http2.client;
 
 import java.io.IOException;
 import java.net.InetSocketAddress;
+import java.nio.channels.SelectableChannel;
 import java.nio.channels.SelectionKey;
 import java.nio.channels.SocketChannel;
 import java.util.Arrays;
@@ -38,17 +39,19 @@ import org.eclipse.jetty.io.Connection;
 import org.eclipse.jetty.io.EndPoint;
 import org.eclipse.jetty.io.ManagedSelector;
 import org.eclipse.jetty.io.MappedByteBufferPool;
-import org.eclipse.jetty.io.SelectChannelEndPoint;
 import org.eclipse.jetty.io.SelectorManager;
+import org.eclipse.jetty.io.SocketChannelEndPoint;
 import org.eclipse.jetty.io.ssl.SslClientConnectionFactory;
 import org.eclipse.jetty.util.Promise;
 import org.eclipse.jetty.util.annotation.ManagedAttribute;
 import org.eclipse.jetty.util.annotation.ManagedObject;
 import org.eclipse.jetty.util.component.ContainerLifeCycle;
 import org.eclipse.jetty.util.ssl.SslContextFactory;
+import org.eclipse.jetty.util.thread.ExecutionStrategy;
 import org.eclipse.jetty.util.thread.QueuedThreadPool;
 import org.eclipse.jetty.util.thread.ScheduledExecutorScheduler;
 import org.eclipse.jetty.util.thread.Scheduler;
+import org.eclipse.jetty.util.thread.strategy.ProduceConsume;
 
 /**
  * <p>{@link HTTP2Client} provides an asynchronous, non-blocking implementation
@@ -126,6 +129,7 @@ public class HTTP2Client extends ContainerLifeCycle
     private int initialSessionRecvWindow = FlowControlStrategy.DEFAULT_WINDOW_SIZE;
     private int initialStreamRecvWindow = FlowControlStrategy.DEFAULT_WINDOW_SIZE;
     private FlowControlStrategy.Factory flowControlStrategyFactory = () -> new BufferingFlowControlStrategy(0.5F);
+    private ExecutionStrategy.Factory executionStrategyFactory = new ProduceConsume.Factory();
 
     @Override
     protected void doStart() throws Exception
@@ -360,6 +364,7 @@ public class HTTP2Client extends ContainerLifeCycle
             context.put(SslClientConnectionFactory.SSL_CONTEXT_FACTORY_CONTEXT_KEY, sslContextFactory);
         context.put(SslClientConnectionFactory.SSL_PEER_HOST_CONTEXT_KEY, address.getHostString());
         context.put(SslClientConnectionFactory.SSL_PEER_PORT_CONTEXT_KEY, address.getPort());
+        context.putIfAbsent(ClientConnectionFactory.CONNECTOR_CONTEXT_KEY, this);
         return context;
     }
 
@@ -376,13 +381,15 @@ public class HTTP2Client extends ContainerLifeCycle
         }
 
         @Override
-        protected EndPoint newEndPoint(SocketChannel channel, ManagedSelector selector, SelectionKey selectionKey) throws IOException
+        protected EndPoint newEndPoint(SelectableChannel channel, ManagedSelector selector, SelectionKey selectionKey) throws IOException
         {
-            return new SelectChannelEndPoint(channel, selector, selectionKey, getScheduler(), getIdleTimeout());
+            SocketChannelEndPoint endp = new SocketChannelEndPoint(channel, selector, selectionKey, getScheduler());
+            endp.setIdleTimeout(getIdleTimeout());
+            return endp;
         }
 
         @Override
-        public Connection newConnection(SocketChannel channel, EndPoint endpoint, Object attachment) throws IOException
+        public Connection newConnection(SelectableChannel channel, EndPoint endpoint, Object attachment) throws IOException
         {
             @SuppressWarnings("unchecked")
             Map<String, Object> context = (Map<String, Object>)attachment;
@@ -393,7 +400,7 @@ public class HTTP2Client extends ContainerLifeCycle
         }
 
         @Override
-        protected void connectionFailed(SocketChannel channel, Throwable failure, Object attachment)
+        protected void connectionFailed(SelectableChannel channel, Throwable failure, Object attachment)
         {
             @SuppressWarnings("unchecked")
             Map<String, Object> context = (Map<String, Object>)attachment;

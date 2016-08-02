@@ -41,7 +41,7 @@ public class JsrParamIdPong extends JsrParamIdOnMessage implements IJsrParamId
         {
             assertPartialMessageSupportDisabled(param,callable);
             param.bind(Role.MESSAGE_PONG);
-//            callable.setDecoderClass(PongMessageDecoder.class);
+            callable.setDecodingType(PongMessage.class);
             return true;
         }
         return false;

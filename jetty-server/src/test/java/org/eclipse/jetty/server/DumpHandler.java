@@ -66,11 +66,21 @@ public class DumpHandler extends AbstractHandler
      * @see org.eclipse.jetty.server.server.Handler#handle(java.lang.String, javax.servlet.http.HttpServletRequest, javax.servlet.http.HttpServletResponse, int)
      */
     @Override
-    public void handle(String target, Request baseRequest, HttpServletRequest request, HttpServletResponse response) throws IOException, ServletException
+    public void doHandle(String target, Request baseRequest, HttpServletRequest request, HttpServletResponse response) throws IOException, ServletException
     {
         if (!isStarted())
             return;
 
+        if (Boolean.valueOf(request.getParameter("flush")))
+            response.flushBuffer();
+        
+        if (Boolean.valueOf(request.getParameter("empty")))
+        {
+            baseRequest.setHandled(true);
+            response.setStatus(200);
+            return;
+        }            
+            
         StringBuilder read = null;
         if (request.getParameter("read")!=null)
         {
@@ -214,6 +224,7 @@ public class DumpHandler extends AbstractHandler
             }
             catch(IOException e)
             {
+                e.printStackTrace();
                 writer.write(e.toString());
             }
         }
@@ -223,7 +234,8 @@ public class DumpHandler extends AbstractHandler
         writer.flush();
 
         // commit now
-        response.setContentLength(buf.size()+1000);
+        if (!Boolean.valueOf(request.getParameter("no-content-length")))
+            response.setContentLength(buf.size()+1000);
         response.addHeader("Before-Flush",response.isCommitted()?"Committed???":"Not Committed");
         buf.writeTo(out);
         out.flush();

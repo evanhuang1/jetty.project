@@ -44,6 +44,7 @@ public class TextPartialMessage implements MessageSink
     public void accept(ByteBuffer payload, Boolean fin)
     {
         String partialText = utf8Partial.toPartialString(payload);
+
         // No decoders for Partial messages per JSR-356 (PFD1 spec)
         partialHandler.onMessage(partialText, fin);
 

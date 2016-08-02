@@ -46,6 +46,7 @@ import org.eclipse.jetty.http.HttpStatus;
 import org.eclipse.jetty.http.HttpURI;
 import org.eclipse.jetty.http.PreEncodedHttpField;
 import org.eclipse.jetty.server.handler.ContextHandler;
+import org.eclipse.jetty.server.handler.ErrorHandler;
 import org.eclipse.jetty.server.handler.HandlerWrapper;
 import org.eclipse.jetty.server.handler.StatisticsHandler;
 import org.eclipse.jetty.util.Attributes;
@@ -86,6 +87,7 @@ public class Server extends HandlerWrapper implements Attributes
     private boolean _stopAtShutdown;
     private boolean _dumpAfterStart=false;
     private boolean _dumpBeforeStop=false;
+    private ErrorHandler _errorHandler;
     private RequestLog _requestLog;
 
     private final Locker _dateLocker = new Locker();
@@ -143,10 +145,27 @@ public class Server extends HandlerWrapper implements Attributes
     }
 
     /* ------------------------------------------------------------ */
+    public ErrorHandler getErrorHandler()
+    {
+        return _errorHandler;
+    }
+
+    /* ------------------------------------------------------------ */
     public void setRequestLog(RequestLog requestLog)
     {
         updateBean(_requestLog,requestLog);
         _requestLog = requestLog;
+    }
+
+    /* ------------------------------------------------------------ */
+    public void setErrorHandler(ErrorHandler errorHandler)
+    {
+        if (errorHandler instanceof ErrorHandler.ErrorPageMapper)
+            throw new IllegalArgumentException("ErrorPageMapper is applicable only to ContextHandler");
+        updateBean(_errorHandler,errorHandler);
+        _errorHandler=errorHandler;
+        if (errorHandler!=null)
+            errorHandler.setServer(this);
     }
 
     /* ------------------------------------------------------------ */
@@ -161,7 +180,6 @@ public class Server extends HandlerWrapper implements Attributes
     {
         return _stopAtShutdown;
     }
-
 
     /* ------------------------------------------------------------ */
     /**
@@ -330,6 +348,14 @@ public class Server extends HandlerWrapper implements Attributes
     @Override
     protected void doStart() throws Exception
     {
+        // Create an error handler if there is none
+        if (_errorHandler==null)
+            _errorHandler=getBean(ErrorHandler.class);
+        if (_errorHandler==null)
+            setErrorHandler(new ErrorHandler());
+        if (_errorHandler instanceof ErrorHandler.ErrorPageMapper)
+            LOG.warn("ErrorPageMapper not supported for Server level Error Handling");
+        
         //If the Server should be stopped when the jvm exits, register
         //with the shutdown handler thread.
         if (getStopAtShutdown())
@@ -343,6 +369,12 @@ public class Server extends HandlerWrapper implements Attributes
         ShutdownMonitor.getInstance().start(); // initialize
 
         LOG.info("jetty-" + getVersion());
+        if (!Jetty.STABLE)
+        {
+            LOG.warn("THIS IS NOT A STABLE RELEASE! DO NOT USE IN PRODUCTION!");
+            LOG.warn("Download a stable release from http://download.eclipse.org/jetty/");
+        }
+        
         HttpGenerator.setJettyVersion(HttpConfiguration.SERVER_VERSION);
         MultiException mex=new MultiException();
 
@@ -414,7 +446,7 @@ public class Server extends HandlerWrapper implements Attributes
 
         if (LOG.isDebugEnabled())
             LOG.debug("doStop {}",this);
-        
+
         MultiException mex=new MultiException();
 
         // list if graceful futures
@@ -496,14 +528,14 @@ public class Server extends HandlerWrapper implements Attributes
      * or after the entire request has been received (for short requests of known length), or
      * on the dispatch of an async request.
      */
-    public void handle(HttpChannel connection) throws IOException, ServletException
+    public void handle(HttpChannel channel) throws IOException, ServletException
     {
-        final String target=connection.getRequest().getPathInfo();
-        final Request request=connection.getRequest();
-        final Response response=connection.getResponse();
+        final String target=channel.getRequest().getPathInfo();
+        final Request request=channel.getRequest();
+        final Response response=channel.getResponse();
 
         if (LOG.isDebugEnabled())
-            LOG.debug("{} on {}{}",request.getDispatcherType(),connection,"\n"+request.getMethod()+" "+request.getHttpURI()+"\n"+request.getHttpFields());
+            LOG.debug("{} {} {} on {}", request.getDispatcherType(), request.getMethod(), target, channel);
 
         if (HttpMethod.OPTIONS.is(request.getMethod()) || "*".equals(target))
         {
@@ -517,7 +549,7 @@ public class Server extends HandlerWrapper implements Attributes
             handle(target, request, request, response);
 
         if (LOG.isDebugEnabled())
-            LOG.debug("RESPONSE for {} h={}{}",target,request.isHandled(),"\n"+response.getStatus()+" "+response.getReason()+"\n"+response.getHttpFields());
+            LOG.debug("handled={} async={} committed={} on {}", request.isHandled(),request.isAsyncStarted(),response.isCommitted(),channel);
     }
 
     /* ------------------------------------------------------------ */
@@ -533,12 +565,12 @@ public class Server extends HandlerWrapper implements Attributes
      * or after the entire request has been received (for short requests of known length), or
      * on the dispatch of an async request.
      */
-    public void handleAsync(HttpChannel connection) throws IOException, ServletException
+    public void handleAsync(HttpChannel channel) throws IOException, ServletException
     {
-        final HttpChannelState state = connection.getRequest().getHttpChannelState();
+        final HttpChannelState state = channel.getRequest().getHttpChannelState();
         final AsyncContextEvent event = state.getAsyncContextEvent();
 
-        final Request baseRequest=connection.getRequest();
+        final Request baseRequest=channel.getRequest();
         final String path=event.getPath();
 
         if (path!=null)
@@ -558,14 +590,10 @@ public class Server extends HandlerWrapper implements Attributes
         final HttpServletResponse response=(HttpServletResponse)event.getSuppliedResponse();
 
         if (LOG.isDebugEnabled())
-        {
-            LOG.debug(request.getDispatcherType()+" "+request.getMethod()+" "+target+" on "+connection);
-            handle(target, baseRequest, request, response);
-            LOG.debug("RESPONSE "+target+"  "+connection.getResponse().getStatus());
-        }
-        else
-            handle(target, baseRequest, request, response);
-
+            LOG.debug("{} {} {} on {}", request.getDispatcherType(), request.getMethod(), target, channel);
+        handle(target, baseRequest, request, response);
+        if (LOG.isDebugEnabled())
+            LOG.debug("handledAsync={} async={} committed={} on {}", channel.getRequest().isHandled(),request.isAsyncStarted(),response.isCommitted(),channel);
     }
 
     /* ------------------------------------------------------------ */
@@ -646,7 +674,8 @@ public class Server extends HandlerWrapper implements Attributes
     @Override
     public void setAttribute(String name, Object attribute)
     {
-        addBean(attribute);
+        Object old=_attributes.getAttribute(name);
+        updateBean(old,attribute);        
         _attributes.setAttribute(name, attribute);
     }
 

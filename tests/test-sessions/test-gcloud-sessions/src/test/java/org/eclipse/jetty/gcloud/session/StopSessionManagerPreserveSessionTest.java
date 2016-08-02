@@ -34,30 +34,22 @@ import org.junit.Test;
  */
 public class StopSessionManagerPreserveSessionTest extends AbstractStopSessionManagerPreserveSessionTest
 {
-    static GCloudSessionTestSupport _testSupport;
-
-    @BeforeClass
-    public static void setup () throws Exception
-    {
-        _testSupport = new GCloudSessionTestSupport();
-        _testSupport.setUp();
-    }
 
     @AfterClass
     public static void teardown () throws Exception
     {
-        _testSupport.tearDown();
+        GCloudTestSuite.__testSupport.deleteSessions();
     }
 
     /** 
      * @see org.eclipse.jetty.server.session.AbstractStopSessionManagerPreserveSessionTest#checkSessionPersisted(boolean)
      */
     @Override
-    public void checkSessionPersisted(boolean expected)
+    public void checkSessionPersisted(String id, boolean expected)
     {
         try
         {
-            _testSupport.assertSessions(1);
+            GCloudTestSuite.__testSupport.assertSessions(1);
         }
         catch (Exception e)
         {
@@ -66,15 +58,12 @@ public class StopSessionManagerPreserveSessionTest extends AbstractStopSessionMa
 
     }
 
-    /** 
-     * @see org.eclipse.jetty.server.session.AbstractStopSessionManagerPreserveSessionTest#createServer(int)
-     */
-    @Override
-    public AbstractTestServer createServer(int port)
-    {
-        return  new GCloudTestServer(port, _testSupport.getConfiguration());
-    }
 
+    @Override
+    public AbstractTestServer createServer(int port, int maxInactiveMs, int scavengeMs,int evictionPolicy)
+    {
+       return new GCloudTestServer(port, maxInactiveMs, scavengeMs, evictionPolicy);
+    }
     /** 
      * @see org.eclipse.jetty.server.session.AbstractStopSessionManagerPreserveSessionTest#configureSessionManagement(org.eclipse.jetty.servlet.ServletContextHandler)
      */

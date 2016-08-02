@@ -18,8 +18,6 @@
 
 package org.eclipse.jetty.server.handler.gzip;
 
-import static org.eclipse.jetty.http.GzipHttpContent.ETAG_GZIP_QUOTE;
-
 import java.io.File;
 import java.io.IOException;
 import java.util.Set;
@@ -30,8 +28,9 @@ import javax.servlet.ServletException;
 import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpServletResponse;
 
-import org.eclipse.jetty.http.GzipHttpContent;
+import org.eclipse.jetty.http.CompressedContentFormat;
 import org.eclipse.jetty.http.HttpField;
+import org.eclipse.jetty.http.HttpFields;
 import org.eclipse.jetty.http.HttpHeader;
 import org.eclipse.jetty.http.HttpMethod;
 import org.eclipse.jetty.http.HttpVersion;
@@ -46,7 +45,6 @@ import org.eclipse.jetty.util.StringUtil;
 import org.eclipse.jetty.util.URIUtil;
 import org.eclipse.jetty.util.log.Log;
 import org.eclipse.jetty.util.log.Logger;
-
 
 /**
  * A Handler that can dynamically GZIP compress responses.   Unlike 
@@ -71,7 +69,7 @@ public class GzipHandler extends HandlerWrapper implements GzipFactory
     private boolean _syncFlush = false;
     
     // non-static, as other GzipHandler instances may have different configurations
-    private final ThreadLocal<Deflater> _deflater = new ThreadLocal<Deflater>();
+    private final ThreadLocal<Deflater> _deflater = new ThreadLocal<>();
 
     private final IncludeExclude<String> _agentPatterns=new IncludeExclude<>(RegexSet.class);
     private final IncludeExclude<String> _methods = new IncludeExclude<>();
@@ -105,6 +103,8 @@ public class GzipHandler extends HandlerWrapper implements GzipFactory
         _mimeTypes.exclude("application/zip");
         _mimeTypes.exclude("application/gzip");
         _mimeTypes.exclude("application/bzip2");
+        _mimeTypes.exclude("application/brotli");
+        _mimeTypes.exclude("application/x-xz");
         _mimeTypes.exclude("application/x-rar-compressed");
         LOG.debug("{} mime types {}",this,_mimeTypes);
         
@@ -145,9 +145,27 @@ public class GzipHandler extends HandlerWrapper implements GzipFactory
 
     /* ------------------------------------------------------------ */
     /**
+     * Add path to excluded paths list.
+     * <p>
+     * There are 2 syntaxes supported, Servlet <code>url-pattern</code> based, and
+     * Regex based.  This means that the initial characters on the path spec
+     * line are very strict, and determine the behavior of the path matching.
+     * <ul>
+     *  <li>If the spec starts with <code>'^'</code> the spec is assumed to be
+     *      a regex based path spec and will match with normal Java regex rules.</li>
+     *  <li>If the spec starts with <code>'/'</code> then spec is assumed to be
+     *      a Servlet url-pattern rules path spec for either an exact match
+     *      or prefix based match.</li>
+     *  <li>If the spec starts with <code>'*.'</code> then spec is assumed to be
+     *      a Servlet url-pattern rules path spec for a suffix based match.</li>
+     *  <li>All other syntaxes are unsupported</li> 
+     * </ul>
+     * <p>
+     * Note: inclusion takes precedence over exclude.
+     * 
      * @param pathspecs Path specs (as per servlet spec) to exclude. If a 
      * ServletContext is available, the paths are relative to the context path,
-     * otherwise they are absolute.
+     * otherwise they are absolute.<br>
      * For backward compatibility the pathspecs may be comma separated strings, but this
      * will not be supported in future versions.
      */
@@ -213,12 +231,27 @@ public class GzipHandler extends HandlerWrapper implements GzipFactory
 
     /* ------------------------------------------------------------ */
     /**
-     * Add path specs to include. Inclusion takes precedence over exclusion.
+     * Add path specs to include.
+     * <p>
+     * There are 2 syntaxes supported, Servlet <code>url-pattern</code> based, and
+     * Regex based.  This means that the initial characters on the path spec
+     * line are very strict, and determine the behavior of the path matching.
+     * <ul>
+     *  <li>If the spec starts with <code>'^'</code> the spec is assumed to be
+     *      a regex based path spec and will match with normal Java regex rules.</li>
+     *  <li>If the spec starts with <code>'/'</code> then spec is assumed to be
+     *      a Servlet url-pattern rules path spec for either an exact match
+     *      or prefix based match.</li>
+     *  <li>If the spec starts with <code>'*.'</code> then spec is assumed to be
+     *      a Servlet url-pattern rules path spec for a suffix based match.</li>
+     *  <li>All other syntaxes are unsupported</li> 
+     * </ul>
+     * <p>
+     * Note: inclusion takes precedence over exclude.
+     * 
      * @param pathspecs Path specs (as per servlet spec) to include. If a 
      * ServletContext is available, the paths are relative to the context path,
      * otherwise they are absolute
-     * For backward compatibility the pathspecs may be comma separated strings, but this
-     * will not be supported in future versions.
      */
     public void addIncludedPaths(String... pathspecs)
     {
@@ -263,23 +296,20 @@ public class GzipHandler extends HandlerWrapper implements GzipFactory
             return null;
         }
 
-        // If not HTTP/2, then we must check the accept encoding header
-        if (request.getHttpVersion()!=HttpVersion.HTTP_2)
+        // check the accept encoding header
+        HttpField accept = request.getHttpFields().getField(HttpHeader.ACCEPT_ENCODING);
+
+        if (accept==null)
         {
-            HttpField accept = request.getHttpFields().getField(HttpHeader.ACCEPT_ENCODING);
+            LOG.debug("{} excluded !accept {}",this,request);
+            return null;
+        }
+        boolean gzip = accept.contains("gzip");
 
-            if (accept==null)
-            {
-                LOG.debug("{} excluded !accept {}",this,request);
-                return null;
-            }
-            boolean gzip = accept.contains("gzip");
-
-            if (!gzip)
-            {
-                LOG.debug("{} excluded not gzip accept {}",this,request);
-                return null;
-            }
+        if (!gzip)
+        {
+            LOG.debug("{} excluded not gzip accept {}",this,request);
+            return null;
         }
         
         Deflater df = _deflater.get();
@@ -356,13 +386,18 @@ public class GzipHandler extends HandlerWrapper implements GzipFactory
 
     /* ------------------------------------------------------------ */
     /**
-     * Get the minimum reponse size.
+     * Get the minimum response size.
      *
-     * @return minimum reponse size
+     * @return minimum response size
      */
     public int getMinGzipSize()
     {
         return _minGzipSize;
+    }
+
+    protected HttpField getVaryField()
+    {
+        return _vary;
     }
 
     /* ------------------------------------------------------------ */
@@ -441,20 +476,22 @@ public class GzipHandler extends HandlerWrapper implements GzipFactory
         String etag = baseRequest.getHttpFields().get(HttpHeader.IF_NONE_MATCH); 
         if (etag!=null)
         {
-            int i=etag.indexOf(ETAG_GZIP_QUOTE);
+            int i=etag.indexOf(CompressedContentFormat.GZIP._etagQuote);
             if (i>0)
             {
+                baseRequest.setAttribute("o.e.j.s.h.gzip.GzipHandler.etag",etag);
                 while (i>=0)
                 {
-                    etag=etag.substring(0,i)+etag.substring(i+GzipHttpContent.ETAG_GZIP.length());
-                    i=etag.indexOf(ETAG_GZIP_QUOTE,i);
+                    etag=etag.substring(0,i)+etag.substring(i+CompressedContentFormat.GZIP._etag.length());
+                    i=etag.indexOf(CompressedContentFormat.GZIP._etagQuote,i);
                 }
                 baseRequest.getHttpFields().put(new HttpField(HttpHeader.IF_NONE_MATCH,etag));
             }
         }
 
         // install interceptor and handle
-        out.setInterceptor(new GzipHttpOutputInterceptor(this,_vary,baseRequest.getHttpChannel(),out.getInterceptor(),_syncFlush));
+        out.setInterceptor(new GzipHttpOutputInterceptor(this,getVaryField(),baseRequest.getHttpChannel(),out.getInterceptor(),isSyncFlush()));
+
         if (_handler!=null)
             _handler.handle(target,baseRequest, request, response);
     }

@@ -415,32 +415,35 @@ public class LdapLoginModule extends AbstractLoginModule
                 return isAuthenticated();
             }
 
+            boolean authed = false;
+
             if (_forceBindingLogin)
             {
-                return bindingLogin(webUserName, webCredential);
+                authed = bindingLogin(webUserName, webCredential);
             }
-
-            // This sets read and the credential
-            UserInfo userInfo = getUserInfo(webUserName);
-
-            if (userInfo == null)
-            {
-                setAuthenticated(false);
-                return false;
-            }
-
-            setCurrentUser(new JAASUserInfo(userInfo));
-
-            boolean authed = false;            
-            if (webCredential instanceof String)
-                authed = credentialLogin(Credential.getCredential((String) webCredential));
             else
-                authed = credentialLogin(webCredential);
-            
+            {
+                // This sets read and the credential
+                UserInfo userInfo = getUserInfo(webUserName);
+
+                if (userInfo == null)
+                {
+                    setAuthenticated(false);
+                    return false;
+                }
+
+                setCurrentUser(new JAASUserInfo(userInfo));
+
+                if (webCredential instanceof String)
+                    authed = credentialLogin(Credential.getCredential((String) webCredential));
+                else
+                    authed = credentialLogin(webCredential);
+            }
+
             //only fetch roles if authenticated
             if (authed)
                 getCurrentUser().fetchRoles();
-            
+
             return authed;
         }
         catch (UnsupportedCallbackException e)
@@ -499,7 +502,17 @@ public class LdapLoginModule extends AbstractLoginModule
         LOG.info("Attempting authentication: " + userDn);
 
         Hashtable<Object,Object> environment = getEnvironment();
+
+        if ( userDn == null || "".equals(userDn) )
+        {
+            throw new NamingException("username may not be empty");
+        }
         environment.put(Context.SECURITY_PRINCIPAL, userDn);
+        // RFC 4513 section 6.3.1, protect against ldap server implementations that allow successful binding on empty passwords
+        if ( password == null || "".equals(password))
+        {
+            throw new NamingException("password may not be empty");
+        }
         environment.put(Context.SECURITY_CREDENTIALS, password);
 
         DirContext dirContext = new InitialDirContext(environment);

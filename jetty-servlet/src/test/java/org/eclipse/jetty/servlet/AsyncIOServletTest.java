@@ -18,19 +18,15 @@
 
 package org.eclipse.jetty.servlet;
 
-import static org.hamcrest.Matchers.containsString;
-import static org.hamcrest.Matchers.instanceOf;
-import static org.hamcrest.Matchers.is;
-import static org.hamcrest.Matchers.not;
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertThat;
-
 import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.net.Socket;
+import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
+import java.util.Queue;
+import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -47,7 +43,12 @@ import javax.servlet.http.HttpServlet;
 import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpServletResponse;
 
+import org.eclipse.jetty.http.HttpStatus;
+import org.eclipse.jetty.http.HttpTester;
+import org.eclipse.jetty.server.HttpChannel;
 import org.eclipse.jetty.server.HttpConnectionFactory;
+import org.eclipse.jetty.server.LocalConnector;
+import org.eclipse.jetty.server.LocalConnector.LocalEndPoint;
 import org.eclipse.jetty.server.Request;
 import org.eclipse.jetty.server.Server;
 import org.eclipse.jetty.server.ServerConnector;
@@ -57,27 +58,45 @@ import org.eclipse.jetty.toolchain.test.AdvancedRunner;
 import org.eclipse.jetty.toolchain.test.http.SimpleHttpParser;
 import org.eclipse.jetty.toolchain.test.http.SimpleHttpResponse;
 import org.eclipse.jetty.util.IO;
+import org.eclipse.jetty.util.log.StacklessLogging;
+import org.hamcrest.Matchers;
 import org.junit.After;
 import org.junit.Assert;
 import org.junit.Test;
 import org.junit.runner.RunWith;
+
+import static org.hamcrest.Matchers.containsString;
+import static org.hamcrest.Matchers.instanceOf;
+import static org.hamcrest.Matchers.is;
+import static org.hamcrest.Matchers.not;
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertThat;
+import static org.junit.Assert.assertTrue;
 
 @RunWith (AdvancedRunner.class)
 public class AsyncIOServletTest
 {
     private Server server;
     private ServerConnector connector;
+    private LocalConnector local;
     private ServletContextHandler context;
     private String path = "/path";
-    private static final ThreadLocal<String> scope = new ThreadLocal<>();
+    private static final ThreadLocal<Throwable> scope = new ThreadLocal<>();
 
     public void startServer(HttpServlet servlet) throws Exception
     {
+        startServer(servlet,30000);
+    }
+    
+    public void startServer(HttpServlet servlet, long idleTimeout) throws Exception
+    {
         server = new Server();
         connector = new ServerConnector(server);
-        connector.setIdleTimeout(30000);
+        connector.setIdleTimeout(idleTimeout);
         connector.getConnectionFactory(HttpConnectionFactory.class).getHttpConfiguration().setDelayDispatchUntilContent(false);
         server.addConnector(connector);
+        local = new LocalConnector(server);
+        server.addConnector(local);
 
         context = new ServletContextHandler(server, "/", false, false);
         ServletHolder holder = new ServletHolder(servlet);
@@ -90,9 +109,12 @@ public class AsyncIOServletTest
             public void enterScope(Context context, Request request, Object reason)
             {
                 if (scope.get()!=null)
+                {
+                    System.err.println(Thread.currentThread()+" Already entered scope!!!");
+                    scope.get().printStackTrace();
                     throw new IllegalStateException();
-                scope.set("SCOPPED");
-                
+                }
+                scope.set(new Throwable());
             }
             @Override
             public void exitScope(Context context, Request request)
@@ -100,9 +122,9 @@ public class AsyncIOServletTest
                 if (scope.get()==null)
                     throw new IllegalStateException();
                 scope.set(null);
-            } 
+            }
         });
-        
+
         server.start();
     }
 
@@ -111,11 +133,18 @@ public class AsyncIOServletTest
         if (scope.get()==null)
             Assert.fail("Not in scope");
     }
-    
+
     @After
     public void stopServer() throws Exception
     {
         server.stop();
+        if (scope.get()!=null)
+        {
+            System.err.println("Still in scope after stop!");
+            scope.get().printStackTrace();
+            throw new IllegalStateException("Didn't leave scope");
+        }
+        scope.set(null);
     }
 
     @Test
@@ -167,7 +196,7 @@ public class AsyncIOServletTest
                         Assert.assertThat("onError message",t.getMessage(),is(throwable.getMessage()));
                         latch.countDown();
                         response.setStatus(500);
-                        
+
                         asyncContext.complete();
                     }
                 });
@@ -196,8 +225,8 @@ public class AsyncIOServletTest
                 line=in.readLine();
             }
             line=in.readLine();
-            
-            Assert.assertTrue(latch.await(5, TimeUnit.SECONDS));
+
+            assertTrue(latch.await(5, TimeUnit.SECONDS));
         }
     }
 
@@ -241,11 +270,7 @@ public class AsyncIOServletTest
                     }
                 });
             }
-        });
-        server.stop();
-        long idleTimeout = 1000;
-        connector.setIdleTimeout(idleTimeout);
-        server.start();
+        },1000);
 
         String data1 = "0123456789";
         String data2 = "ABCDEF";
@@ -288,7 +313,7 @@ public class AsyncIOServletTest
                     response.flushBuffer();
                     return;
                 }
-                
+
                 final AsyncContext asyncContext = request.startAsync(request, response);
                 request.getInputStream().setReadListener(new ReadListener()
                 {
@@ -323,7 +348,8 @@ public class AsyncIOServletTest
                 "\r\n" +
                 data;
 
-        try (Socket client = new Socket("localhost", connector.getLocalPort()))
+        try (Socket client = new Socket("localhost", connector.getLocalPort());
+             StacklessLogging stackless = new StacklessLogging(HttpChannel.class))
         {
             OutputStream output = client.getOutputStream();
             output.write(request.getBytes("UTF-8"));
@@ -398,11 +424,11 @@ public class AsyncIOServletTest
             SimpleHttpParser parser = new SimpleHttpParser();
             SimpleHttpResponse response = parser.readResponse(new BufferedReader(new InputStreamReader(client.getInputStream(), "UTF-8")));
 
-            Assert.assertTrue(latch.await(5, TimeUnit.SECONDS));
+            assertTrue(latch.await(5, TimeUnit.SECONDS));
             Assert.assertEquals("500", response.getCode());
         }
     }
-    
+
 
     @Test
     public void testAsyncWriteClosed() throws Exception
@@ -412,7 +438,7 @@ public class AsyncIOServletTest
         for (int i=0;i<10;i++)
             text=text+text;
         final byte[] data = text.getBytes(StandardCharsets.ISO_8859_1);
-        
+
         startServer(new HttpServlet()
         {
             @Override
@@ -420,7 +446,7 @@ public class AsyncIOServletTest
             {
                 assertScope();
                 response.flushBuffer();
-                
+
                 final AsyncContext async = request.startAsync();
                 final ServletOutputStream out = response.getOutputStream();
                 out.setWriteListener(new WriteListener()
@@ -478,18 +504,18 @@ public class AsyncIOServletTest
             line=in.readLine();
             assertThat(line, containsString("discontent. How Now Brown Cow. The "));
         }
-        
+
         if (!latch.await(5, TimeUnit.SECONDS))
             Assert.fail();
     }
-    
+
 
     @Test
     public void testIsReadyAtEOF() throws Exception
     {
         String text = "TEST\n";
         final byte[] data = text.getBytes(StandardCharsets.ISO_8859_1);
-        
+
         startServer(new HttpServlet()
         {
             @Override
@@ -497,17 +523,17 @@ public class AsyncIOServletTest
             {
                 assertScope();
                 response.flushBuffer();
-                
+
                 final AsyncContext async = request.startAsync();
                 final ServletInputStream in = request.getInputStream();
                 final ServletOutputStream out = response.getOutputStream();
-                
+
                 in.setReadListener(new ReadListener()
                 {
                     transient int _i=0;
                     transient boolean _minusOne=false;;
                     transient boolean _finished=false;;
-                    
+
                     @Override
                     public void onError(Throwable t)
                     {
@@ -515,7 +541,7 @@ public class AsyncIOServletTest
                         t.printStackTrace();
                         async.complete();
                     }
-                    
+
                     @Override
                     public void onDataAvailable() throws IOException
                     {
@@ -528,17 +554,17 @@ public class AsyncIOServletTest
                             else if (data[_i++]!=b)
                                 throw new IllegalStateException();
                         }
-                        
+
                         if (in.isFinished())
                             _finished=true;
                     }
-                    
+
                     @Override
                     public void onAllDataRead() throws IOException
                     {
                         assertScope();
                         out.write(String.format("i=%d eof=%b finished=%b",_i,_minusOne,_finished).getBytes(StandardCharsets.ISO_8859_1));
-                        async.complete();                        
+                        async.complete();
                     }
                 });
             }
@@ -568,14 +594,14 @@ public class AsyncIOServletTest
             assertThat(line, containsString("i="+data.length+" eof=true finished=true"));
         }
     }
-    
+
 
     @Test
     public void testOnAllDataRead() throws Exception
     {
         String text = "X";
         final byte[] data = text.getBytes(StandardCharsets.ISO_8859_1);
-        
+
         startServer(new HttpServlet()
         {
             @Override
@@ -583,12 +609,12 @@ public class AsyncIOServletTest
             {
                 assertScope();
                 response.flushBuffer();
-                
+
                 final AsyncContext async = request.startAsync();
                 async.setTimeout(5000);
                 final ServletInputStream in = request.getInputStream();
                 final ServletOutputStream out = response.getOutputStream();
-                
+
                 in.setReadListener(new ReadListener()
                 {
                     @Override
@@ -598,7 +624,7 @@ public class AsyncIOServletTest
                         t.printStackTrace();
                         async.complete();
                     }
-                    
+
                     @Override
                     public void onDataAvailable() throws IOException
                     {
@@ -620,13 +646,13 @@ public class AsyncIOServletTest
                             e.printStackTrace();
                         }
                     }
-                    
+
                     @Override
                     public void onAllDataRead() throws IOException
                     {
                         assertScope();
                         out.write("OK\n".getBytes(StandardCharsets.ISO_8859_1));
-                        async.complete();                        
+                        async.complete();
                     }
                 });
             }
@@ -658,13 +684,13 @@ public class AsyncIOServletTest
             assertThat(line, containsString("OK"));
         }
     }
-    
+
     @Test
     public void testOtherThreadOnAllDataRead() throws Exception
     {
         String text = "X";
         final byte[] data = text.getBytes(StandardCharsets.ISO_8859_1);
-        
+
         startServer(new HttpServlet()
         {
             @Override
@@ -672,15 +698,15 @@ public class AsyncIOServletTest
             {
                 assertScope();
                 response.flushBuffer();
-                
+
                 final AsyncContext async = request.startAsync();
                 async.setTimeout(500000);
                 final ServletInputStream in = request.getInputStream();
                 final ServletOutputStream out = response.getOutputStream();
-                
+
                 if (request.getDispatcherType()==DispatcherType.ERROR)
                     throw new IllegalStateException();
-                
+
                 in.setReadListener(new ReadListener()
                 {
                     @Override
@@ -690,7 +716,7 @@ public class AsyncIOServletTest
                         t.printStackTrace();
                         async.complete();
                     }
-                    
+
                     @Override
                     public void onDataAvailable() throws IOException
                     {
@@ -720,12 +746,12 @@ public class AsyncIOServletTest
                             }
                         });
                     }
-                    
+
                     @Override
                     public void onAllDataRead() throws IOException
                     {
                         out.write("OK\n".getBytes(StandardCharsets.ISO_8859_1));
-                        async.complete();                        
+                        async.complete();
                     }
                 });
             }
@@ -757,7 +783,7 @@ public class AsyncIOServletTest
             assertThat(line, containsString("OK"));
         }
     }
-    
+
 
     @Test
     public void testCompleteBeforeOnAllDataRead() throws Exception
@@ -765,7 +791,7 @@ public class AsyncIOServletTest
         String text = "XYZ";
         final byte[] data = text.getBytes(StandardCharsets.ISO_8859_1);
         final AtomicBoolean allDataRead = new AtomicBoolean(false);
-        
+
         startServer(new HttpServlet()
         {
             @Override
@@ -773,11 +799,11 @@ public class AsyncIOServletTest
             {
                 assertScope();
                 response.flushBuffer();
-                
+
                 final AsyncContext async = request.startAsync();
                 final ServletInputStream in = request.getInputStream();
                 final ServletOutputStream out = response.getOutputStream();
-                
+
                 in.setReadListener(new ReadListener()
                 {
                     @Override
@@ -786,7 +812,7 @@ public class AsyncIOServletTest
                         assertScope();
                         t.printStackTrace();
                     }
-                    
+
                     @Override
                     public void onDataAvailable() throws IOException
                     {
@@ -799,17 +825,17 @@ public class AsyncIOServletTest
                                 out.write("OK\n".getBytes(StandardCharsets.ISO_8859_1));
                                 async.complete();
                                 return;
-                            } 
+                            }
                         }
                     }
-                    
+
                     @Override
                     public void onAllDataRead() throws IOException
                     {
                         assertScope();
                         out.write("BAD!!!\n".getBytes(StandardCharsets.ISO_8859_1));
                         allDataRead.set(true);
-                        throw new IllegalStateException();     
+                        throw new IllegalStateException();
                     }
                 });
             }
@@ -843,14 +869,14 @@ public class AsyncIOServletTest
             Assert.assertFalse(allDataRead.get());
         }
     }
-    
+
 
     @Test
     public void testEmptyAsyncRead() throws Exception
     {
         final AtomicBoolean oda = new AtomicBoolean();
         final CountDownLatch latch = new CountDownLatch(1);
-        
+
         startServer(new HttpServlet()
         {
             @Override
@@ -863,14 +889,14 @@ public class AsyncIOServletTest
                 request.getInputStream().setReadListener(new ReadListener()
                 {
                     @Override
-                    public void onDataAvailable() throws IOException 
+                    public void onDataAvailable() throws IOException
                     {
                         assertScope();
                         oda.set(true);
                     }
 
                     @Override
-                    public void onAllDataRead() throws IOException 
+                    public void onAllDataRead() throws IOException
                     {
                         assertScope();
                         asyncContext.complete();
@@ -878,12 +904,12 @@ public class AsyncIOServletTest
                     }
 
                     @Override
-                    public void onError(Throwable t) 
+                    public void onError(Throwable t)
                     {
                         assertScope();
                         t.printStackTrace();
                         asyncContext.complete();
-                    }        
+                    }
                 });
             }
         });
@@ -904,9 +930,105 @@ public class AsyncIOServletTest
             // wait for onAllDataRead BEFORE closing client
             latch.await();
         }
-        
+
         // ODA not called at all!
         Assert.assertFalse(oda.get());
     }
 
+    @Test
+    public void testWriteFromOnDataAvailable() throws Exception
+    {
+        Queue<Throwable> errors = new ConcurrentLinkedQueue<>();
+        CountDownLatch writeLatch = new CountDownLatch(1);
+        startServer(new HttpServlet()
+        {
+            @Override
+            protected void service(HttpServletRequest request, HttpServletResponse response) throws ServletException, IOException
+            {
+                AsyncContext asyncContext = request.startAsync();
+                request.getInputStream().setReadListener(new ReadListener()
+                {
+                    @Override
+                    public void onDataAvailable() throws IOException
+                    {
+                        ServletInputStream input = request.getInputStream();
+                        ServletOutputStream output = response.getOutputStream();
+                        while (input.isReady())
+                        {
+                            byte[] buffer = new byte[512];
+                            int read = input.read(buffer);
+                            if (read < 0)
+                            {
+                                //if (output.isReady())
+                                {
+                                    asyncContext.complete();
+                                }
+                                break;
+                            }
+                            if (output.isReady())
+                            {
+                                output.write(buffer, 0, read);
+                            }
+                            else
+                                Assert.fail();
+                        }
+                    }
+
+                    @Override
+                    public void onAllDataRead() throws IOException
+                    {
+                    }
+
+                    @Override
+                    public void onError(Throwable t)
+                    {
+                        errors.offer(t);
+                    }
+                });
+                response.getOutputStream().setWriteListener(new WriteListener()
+                {
+                    @Override
+                    public void onWritePossible() throws IOException
+                    {
+                        if (writeLatch.getCount()==0)
+                            asyncContext.complete();
+                        else
+                            writeLatch.countDown();
+                    }
+
+                    @Override
+                    public void onError(Throwable t)
+                    {
+                        errors.offer(t);
+                    }
+                });
+            }
+        });
+
+        String content = "0123456789ABCDEF";
+
+        try (LocalEndPoint endp = local.connect())
+        {
+            String request = "POST " + path + " HTTP/1.1\r\n" +
+                    "Host: localhost:" + connector.getLocalPort() + "\r\n" +
+                    "Transfer-Encoding: chunked\r\n" +
+                    "\r\n" +
+                    Integer.toHexString(content.length())+"\r\n" +
+                    content + "\r\n";
+            endp.addInput(ByteBuffer.wrap(request.getBytes("UTF-8")));
+
+            assertTrue(writeLatch.await(5, TimeUnit.SECONDS));
+
+            request = "" +
+                    "0\r\n" +
+                    "\r\n";
+            endp.addInput(ByteBuffer.wrap(request.getBytes("UTF-8")));
+
+            HttpTester.Response response = HttpTester.parseResponse(endp.getResponse());
+
+            assertThat(response.getStatus(), Matchers.equalTo(HttpStatus.OK_200));
+            assertThat(response.getContent(), Matchers.equalTo(content));
+            assertThat(errors, Matchers.hasSize(0));
+        }
+    }
 }

@@ -18,6 +18,15 @@
 
 package org.eclipse.jetty.server;
 
+import static org.hamcrest.Matchers.anyOf;
+import static org.hamcrest.Matchers.containsString;
+import static org.hamcrest.Matchers.instanceOf;
+import static org.hamcrest.Matchers.is;
+import static org.hamcrest.Matchers.notNullValue;
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertSame;
+import static org.junit.Assert.assertThat;
+
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.PrintWriter;
@@ -28,28 +37,22 @@ import java.net.URI;
 import java.net.URISyntaxException;
 import java.nio.charset.StandardCharsets;
 import java.util.Collection;
+import java.util.concurrent.atomic.AtomicLong;
 
 import javax.servlet.ServletException;
 import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpServletResponse;
 
-import org.eclipse.jetty.io.ChannelEndPoint;
 import org.eclipse.jetty.io.EndPoint;
+import org.eclipse.jetty.io.SocketChannelEndPoint;
 import org.eclipse.jetty.server.handler.AbstractHandler;
 import org.eclipse.jetty.server.handler.DefaultHandler;
 import org.eclipse.jetty.server.handler.HandlerList;
 import org.eclipse.jetty.toolchain.test.OS;
 import org.eclipse.jetty.util.IO;
+import org.eclipse.jetty.util.log.StacklessLogging;
+import org.hamcrest.Matchers;
 import org.junit.Test;
-
-import static org.hamcrest.Matchers.anyOf;
-import static org.hamcrest.Matchers.containsString;
-import static org.hamcrest.Matchers.instanceOf;
-import static org.hamcrest.Matchers.is;
-import static org.hamcrest.Matchers.notNullValue;
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertSame;
-import static org.junit.Assert.assertThat;
 
 public class ServerConnectorTest
 {
@@ -61,8 +64,8 @@ public class ServerConnectorTest
             response.setContentType("text/plain");
 
             EndPoint endPoint = baseRequest.getHttpChannel().getEndPoint();
-            assertThat("Endpoint",endPoint,instanceOf(ChannelEndPoint.class));
-            ChannelEndPoint channelEndPoint = (ChannelEndPoint)endPoint;
+            assertThat("Endpoint",endPoint,instanceOf(SocketChannelEndPoint.class));
+            SocketChannelEndPoint channelEndPoint = (SocketChannelEndPoint)endPoint;
             Socket socket = channelEndPoint.getSocket();
             ServerConnector connector = (ServerConnector)baseRequest.getHttpChannel().getConnector();
 
@@ -234,5 +237,33 @@ public class ServerConnectorTest
         assertSame(proxy, factories.iterator().next());
         assertEquals(2, connector.getBeans(ConnectionFactory.class).size());
         assertEquals(proxy.getProtocol(), connector.getDefaultProtocol());
+    }
+
+    @Test
+    public void testExceptionWhileAccepting() throws Exception
+    {
+        Server server = new Server();
+        try (StacklessLogging stackless = new StacklessLogging(AbstractConnector.class))
+        {
+            AtomicLong spins = new AtomicLong();
+            ServerConnector connector = new ServerConnector(server)
+            {
+                @Override
+                public void accept(int acceptorID) throws IOException
+                {
+                    spins.incrementAndGet();
+                    throw new IOException("explicitly_thrown_by_test");
+                }
+            };
+            server.addConnector(connector);
+            server.start();
+
+            Thread.sleep(1000);
+            assertThat(spins.get(), Matchers.lessThan(5L));
+        }
+        finally
+        {
+            server.stop();
+        }
     }
 }

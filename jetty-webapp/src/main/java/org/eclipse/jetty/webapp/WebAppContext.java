@@ -24,6 +24,7 @@ import java.net.MalformedURLException;
 import java.net.URL;
 import java.net.URLClassLoader;
 import java.security.PermissionCollection;
+import java.security.PrivilegedExceptionAction;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
@@ -34,6 +35,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.Callable;
 
 import javax.servlet.ServletContext;
 import javax.servlet.ServletRegistration.Dynamic;
@@ -137,6 +139,7 @@ public class WebAppContext extends ServletContextHandler implements WebAppClassL
     // with a more automatic distributed mechanism
     public final static String[] __dftServerClasses =
     {
+        "-org.eclipse.jetty.session.infinispan.", //don't hide infinispan support classes
         "-org.eclipse.jetty.jmx.",          // don't hide jmx classes
         "-org.eclipse.jetty.util.annotation.", // don't hide jmx annotation
         "-org.eclipse.jetty.continuation.", // don't hide continuation classes
@@ -144,6 +147,7 @@ public class WebAppContext extends ServletContextHandler implements WebAppClassL
         "-org.eclipse.jetty.jaas.",         // don't hide jaas classes
         "-org.eclipse.jetty.servlets.",     // don't hide jetty servlets
         "-org.eclipse.jetty.servlet.DefaultServlet", // don't hide default servlet
+        "-org.eclipse.jetty.servlet.NoJspServlet", // don't hide noJspServlet servlet
         "-org.eclipse.jetty.jsp.",          //don't hide jsp servlet
         "-org.eclipse.jetty.servlet.listener.", // don't hide useful listeners
         "-org.eclipse.jetty.websocket.",    // don't hide websocket classes from webapps (allow webapp to use ones from system classloader)
@@ -185,7 +189,7 @@ public class WebAppContext extends ServletContextHandler implements WebAppClassL
     private boolean _configurationDiscovered=true;
     private boolean _allowDuplicateFragmentNames = false;
     private boolean _throwUnavailableOnStartupException = false;
-
+    
 
 
     private MetaData _metadata=new MetaData();
@@ -747,7 +751,7 @@ public class WebAppContext extends ServletContextHandler implements WebAppClassL
 
         _systemClasses.prependPattern(classOrPackage);
     }
-
+    
     /* ------------------------------------------------------------ */
     @Override
     public boolean isServerClass(String name)
@@ -924,7 +928,7 @@ public class WebAppContext extends ServletContextHandler implements WebAppClassL
         if (_configurationClasses.size()==0)
             _configurationClasses.addAll(Configuration.ClassList.serverDefault(getServer()));
         for (String configClass : _configurationClasses)
-            _configurations.add((Configuration)Loader.loadClass(this.getClass(), configClass).newInstance());
+            _configurations.add((Configuration)Loader.loadClass(configClass).newInstance());
     }
 
     /* ------------------------------------------------------------ */

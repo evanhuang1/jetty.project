@@ -77,6 +77,7 @@ import org.eclipse.jetty.http.HttpHeader;
 import org.eclipse.jetty.http.HttpHeaderValue;
 import org.eclipse.jetty.http.HttpMethod;
 import org.eclipse.jetty.http.HttpVersion;
+import org.eclipse.jetty.io.AbstractConnection;
 import org.eclipse.jetty.io.EndPoint;
 import org.eclipse.jetty.server.handler.AbstractHandler;
 import org.eclipse.jetty.toolchain.test.TestingDir;
@@ -86,6 +87,7 @@ import org.eclipse.jetty.util.FuturePromise;
 import org.eclipse.jetty.util.IO;
 import org.eclipse.jetty.util.Promise;
 import org.eclipse.jetty.util.SocketAddressResolver;
+import org.eclipse.jetty.util.log.StacklessLogging;
 import org.eclipse.jetty.util.ssl.SslContextFactory;
 import org.junit.Assert;
 import org.junit.Assume;
@@ -114,7 +116,7 @@ public class HttpClientTest extends AbstractHttpClientServerTest
         Assert.assertEquals(200, response.getStatus());
 
         HttpDestinationOverHTTP destination = (HttpDestinationOverHTTP)client.getDestination(scheme, host, port);
-        DuplexConnectionPool connectionPool = destination.getConnectionPool();
+        DuplexConnectionPool connectionPool = (DuplexConnectionPool)destination.getConnectionPool();
 
         long start = System.nanoTime();
         HttpConnectionOverHTTP connection = null;
@@ -481,24 +483,27 @@ public class HttpClientTest extends AbstractHttpClientServerTest
 
         client.setMaxConnectionsPerDestination(1);
 
-        final CountDownLatch latch = new CountDownLatch(2);
-        client.newRequest("localhost", connector.getLocalPort())
-                .scheme(scheme)
-                .path("/one")
-                .onResponseFailure((response, failure) -> latch.countDown())
-                .send(null);
+        try (StacklessLogging stackless = new StacklessLogging(org.eclipse.jetty.server.HttpChannel.class))
+        {
+            final CountDownLatch latch = new CountDownLatch(2);
+            client.newRequest("localhost", connector.getLocalPort())
+            .scheme(scheme)
+            .path("/one")
+            .onResponseFailure((response, failure) -> latch.countDown())
+            .send(null);
 
-        client.newRequest("localhost", connector.getLocalPort())
-                .scheme(scheme)
-                .path("/two")
-                .onResponseSuccess(response ->
-                {
-                    Assert.assertEquals(200, response.getStatus());
-                    latch.countDown();
-                })
-                .send(null);
+            client.newRequest("localhost", connector.getLocalPort())
+            .scheme(scheme)
+            .path("/two")
+            .onResponseSuccess(response ->
+            {
+                Assert.assertEquals(200, response.getStatus());
+                latch.countDown();
+            })
+            .send(null);
 
-        Assert.assertTrue(latch.await(5, TimeUnit.SECONDS));
+            Assert.assertTrue(latch.await(5, TimeUnit.SECONDS));
+        }
     }
 
     @Test
@@ -633,7 +638,8 @@ public class HttpClientTest extends AbstractHttpClientServerTest
                 .onRequestBegin(request ->
                 {
                     HttpDestinationOverHTTP destination = (HttpDestinationOverHTTP)client.getDestination(scheme, host, port);
-                    destination.getConnectionPool().getActiveConnections().peek().close();
+                    DuplexConnectionPool connectionPool = (DuplexConnectionPool)destination.getConnectionPool();
+                    connectionPool.getActiveConnections().iterator().next().close();
                 })
                 .send(new Response.Listener.Adapter()
                 {
@@ -1504,6 +1510,11 @@ public class HttpClientTest extends AbstractHttpClientServerTest
 
                 ContentResponse response = listener.get(5, TimeUnit.SECONDS);
                 Assert.assertEquals(200, response.getStatus());
+
+                // Because the tunnel was successful, this connection will be
+                // upgraded to an SslConnection, so it will not be fill interested.
+                // This test doesn't upgrade, so it needs to restore the fill interest.
+                ((AbstractConnection)connection).fillInterested();
 
                 // Test that I can send another request on the same connection.
                 request = client.newRequest(host, port);

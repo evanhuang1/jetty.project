@@ -31,20 +31,19 @@ import org.eclipse.jetty.http2.frames.HeadersFrame;
 import org.eclipse.jetty.http2.frames.PushPromiseFrame;
 import org.eclipse.jetty.http2.frames.ResetFrame;
 import org.eclipse.jetty.server.Connector;
-import org.eclipse.jetty.server.HttpChannel;
 import org.eclipse.jetty.server.HttpTransport;
 import org.eclipse.jetty.util.BufferUtil;
 import org.eclipse.jetty.util.Callback;
 import org.eclipse.jetty.util.Promise;
 import org.eclipse.jetty.util.log.Log;
 import org.eclipse.jetty.util.log.Logger;
+import org.eclipse.jetty.util.thread.Invocable.InvocationType;
 
 public class HttpTransportOverHTTP2 implements HttpTransport
 {
     private static final Logger LOG = Log.getLogger(HttpTransportOverHTTP2.class);
 
     private final AtomicBoolean commit = new AtomicBoolean();
-    private final Callback commitCallback = new CommitCallback();
     private final Connector connector;
     private final HTTP2ServerConnection connection;
     private IStream stream;
@@ -62,7 +61,7 @@ public class HttpTransportOverHTTP2 implements HttpTransport
         // copying we can defer to the endpoint
         return connection.getEndPoint().isOptimizedForDirectBuffers();
     }
-    
+
     public IStream getStream()
     {
         return stream;
@@ -101,8 +100,31 @@ public class HttpTransportOverHTTP2 implements HttpTransport
             {
                 if (hasContent)
                 {
-                    commit(info, false, commitCallback);
-                    send(content, lastContent, callback);
+                    commit(info, false, new Callback()
+                    {
+                        @Override
+                        public InvocationType getInvocationType()
+                        {
+                            // TODO is this dependent on the callback itself?
+                            return InvocationType.NON_BLOCKING;
+                        }
+                        
+                        @Override
+                        public void succeeded()
+                        {
+                            if (LOG.isDebugEnabled())
+                                LOG.debug("HTTP2 Response #{}/{} committed", stream.getId(), Integer.toHexString(stream.getSession().hashCode()));
+                            send(content, lastContent, callback);
+                        }
+
+                        @Override
+                        public void failed(Throwable x)
+                        {
+                            if (LOG.isDebugEnabled())
+                                LOG.debug("HTTP2 Response #" + stream.getId() + "/" + Integer.toHexString(stream.getSession().hashCode()) + " failed to commit", x);
+                            callback.failed(x);
+                        }
+                    });
                 }
                 else
                 {
@@ -144,8 +166,8 @@ public class HttpTransportOverHTTP2 implements HttpTransport
         }
 
         if (LOG.isDebugEnabled())
-            LOG.debug("HTTP/2 Push {}",request);
-        
+            LOG.debug("HTTP/2 Push {}", request);
+
         stream.push(new PushPromiseFrame(stream.getId(), 0, request), new Promise<Stream>()
         {
             @Override
@@ -167,8 +189,9 @@ public class HttpTransportOverHTTP2 implements HttpTransport
     {
         if (LOG.isDebugEnabled())
         {
-            LOG.debug("HTTP2 Response #{}:{}{} {}{}{}",
-                    stream.getId(), System.lineSeparator(), HttpVersion.HTTP_2, info.getStatus(),
+            LOG.debug("HTTP2 Response #{}/{}:{}{} {}{}{}",
+                    stream.getId(), Integer.toHexString(stream.getSession().hashCode()),
+                    System.lineSeparator(), HttpVersion.HTTP_2, info.getStatus(),
                     System.lineSeparator(), info.getFields());
         }
 
@@ -180,8 +203,9 @@ public class HttpTransportOverHTTP2 implements HttpTransport
     {
         if (LOG.isDebugEnabled())
         {
-            LOG.debug("HTTP2 Response #{}: {} content bytes{}",
-                    stream.getId(), content.remaining(), lastContent ? " (last chunk)" : "");
+            LOG.debug("HTTP2 Response #{}/{}: {} content bytes{}",
+                    stream.getId(), Integer.toHexString(stream.getSession().hashCode()),
+                    content.remaining(), lastContent ? " (last chunk)" : "");
         }
         DataFrame frame = new DataFrame(stream.getId(), content, lastContent);
         stream.data(frame, callback);
@@ -190,16 +214,19 @@ public class HttpTransportOverHTTP2 implements HttpTransport
     @Override
     public void onCompleted()
     {
+        // If the stream is not closed, it is still reading the request content.
+        // Send a reset to the other end so that it stops sending data.
         if (!stream.isClosed())
         {
-            // If the stream is not closed, it is still reading the request content.
-            // Send a reset to the other end so that it stops sending data.
+            if (LOG.isDebugEnabled())
+                LOG.debug("HTTP2 Response #{}: unconsumed request content, resetting stream", stream.getId());
             stream.reset(new ResetFrame(stream.getId(), ErrorCode.CANCEL_STREAM_ERROR.code), Callback.NOOP);
-            // Now that this stream is reset, in-flight data frames will be consumed and discarded.
-            // Consume the existing queued data frames to avoid stalling the flow control.
-            HttpChannel channel = (HttpChannel)stream.getAttribute(IStream.CHANNEL_ATTRIBUTE);
-            channel.getRequest().getHttpInput().consumeAll();
         }
+
+        // Consume the existing queued data frames to
+        // avoid stalling the session flow control.
+        HttpChannelOverHTTP2 channel = (HttpChannelOverHTTP2)stream.getAttribute(IStream.CHANNEL_ATTRIBUTE);
+        channel.consumeInput();
     }
 
     @Override
@@ -207,25 +234,9 @@ public class HttpTransportOverHTTP2 implements HttpTransport
     {
         IStream stream = this.stream;
         if (LOG.isDebugEnabled())
-            LOG.debug("HTTP2 Response #{} aborted", stream == null ? -1 : stream.getId());
+            LOG.debug("HTTP2 Response #{}/{} aborted", stream == null ? -1 : stream.getId(),
+                    stream == null ? -1 : Integer.toHexString(stream.getSession().hashCode()));
         if (stream != null)
             stream.reset(new ResetFrame(stream.getId(), ErrorCode.INTERNAL_ERROR.code), Callback.NOOP);
-    }
-
-    private class CommitCallback implements Callback.NonBlocking
-    {   
-        @Override
-        public void succeeded()
-        {
-            if (LOG.isDebugEnabled())
-                LOG.debug("HTTP2 Response #{} committed", stream.getId());
-        }
-
-        @Override
-        public void failed(Throwable x)
-        {
-            if (LOG.isDebugEnabled())
-                LOG.debug("HTTP2 Response #" + stream.getId() + " failed to commit", x);
-        }
     }
 }

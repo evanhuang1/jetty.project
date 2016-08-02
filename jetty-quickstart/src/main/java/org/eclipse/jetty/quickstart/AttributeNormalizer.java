@@ -123,6 +123,11 @@ public class AttributeNormalizer
                 return 1;
             }
             
+            if( (o1.path == null) && (o2.path == null) )
+            {
+                return 0;
+            }
+            
             // Different lengths?
             int diff = o2.path.getNameCount() - o1.path.getNameCount();
             if(diff != 0)
@@ -142,20 +147,51 @@ public class AttributeNormalizer
         }
     }
 
+    public static String uriSeparators(String path)
+    {
+        StringBuilder ret = new StringBuilder();
+        for (char c : path.toCharArray())
+        {
+            if ((c == '/') || (c == '\\'))
+            {
+                ret.append('/');
+            }
+            else
+            {
+                ret.append(c);
+            }
+        }
+        return ret.toString();
+    }
+
+    private URI warURI;
     private List<PathAttribute> attributes = new ArrayList<>();
 
     public AttributeNormalizer(Resource baseResource)
     {
+        // WAR URI is always evaluated before paths.
+        warURI = baseResource == null ? null : baseResource.getURI();
+        // We don't normalize or resolve the baseResource URI
+        if (!warURI.isAbsolute())
+            throw new IllegalArgumentException("WAR URI is not absolute: " + warURI);
         try
         {
             // Track path attributes for expansion
-            attributes.add(new PathAttribute("WAR", baseResource == null ? null : baseResource.getFile().toPath()).weight(10));
             attributes.add(new PathAttribute("jetty.base", "jetty.base").weight(9));
             attributes.add(new PathAttribute("jetty.home", "jetty.home").weight(8));
             attributes.add(new PathAttribute("user.home", "user.home").weight(7));
             attributes.add(new PathAttribute("user.dir", "user.dir").weight(6));
             
             Collections.sort(attributes, new PathAttributeComparator());
+
+            if (LOG.isDebugEnabled())
+            {
+                int i = 0;
+                for (PathAttribute attr : attributes)
+                {
+                    LOG.debug(" [{}] {}", i++, attr);
+                }
+            }
         }
         catch (Exception e)
         {
@@ -193,15 +229,32 @@ public class AttributeNormalizer
             }
             else if ("file".equalsIgnoreCase(uri.getScheme()))
             {
-                return "file:" + normalizePath(new File(uri).toPath());
+                return "file:" + normalizePath(new File(uri.getRawSchemeSpecificPart()).toPath());
             }
-
+            else
+            {
+                if(uri.isAbsolute())
+                {
+                    return normalizeUri(uri);
+                }
+            }
         }
         catch (Exception e)
         {
             LOG.warn(e);
         }
         return String.valueOf(o);
+    }
+    
+    public String normalizeUri(URI uri)
+    {
+        String uriStr = uri.toASCIIString();
+        String warStr = warURI.toASCIIString();
+        if (uriStr.startsWith(warStr))
+        {
+            return "${WAR}" + uriStr.substring(warStr.length());
+        }
+        return uriStr;
     }
 
     public String normalizePath(Path path)
@@ -215,7 +268,7 @@ public class AttributeNormalizer
             {
                 if (path.startsWith(attr.path) || path.equals(attr.path) || Files.isSameFile(path,attr.path))
                 {
-                    return URIUtil.addPaths("${" + attr.key + "}",attr.path.relativize(path).toString());
+                    return uriSeparators(URIUtil.addPaths("${" + attr.key + "}",attr.path.relativize(path).toString()));
                 }
             }
             catch (IOException ignore)
@@ -224,7 +277,7 @@ public class AttributeNormalizer
             }
         }
 
-        return path.toString();
+        return uriSeparators(path.toString());
     }
 
     public String expand(String str)
@@ -306,15 +359,26 @@ public class AttributeNormalizer
 
     private String getString(String property)
     {
-        // Use known attributes first
+        if(property == null)
+        {
+            return null;
+        }
+
+        // Use war path (if known)
+        if("WAR".equalsIgnoreCase(property))
+        {
+            return warURI.toASCIIString();
+        }
+        
+        // Use known path attributes
         for (PathAttribute attr : attributes)
         {
             if (attr.key.equalsIgnoreCase(property))
             {
-                return attr.path.toString();
+                return uriSeparators(attr.path.toString());
             }
         }
-        
+
         // Use system properties next
         return System.getProperty(property);
     }

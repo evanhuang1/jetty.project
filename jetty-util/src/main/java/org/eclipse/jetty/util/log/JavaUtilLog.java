@@ -95,7 +95,7 @@ public class JavaUtilLog extends AbstractLogger
                         {
                             try
                             {
-                                URL props = Loader.getResource(JavaUtilLog.class,properties);
+                                URL props = Loader.getResource(properties);
                                 if (props != null)
                                     LogManager.getLogManager().readConfiguration(props.openStream());
                             }
@@ -255,8 +255,8 @@ public class JavaUtilLog extends AbstractLogger
 
     public void ignore(Throwable ignored)
     {
-        if (_logger.isLoggable(Level.ALL))
-            log(Level.WARNING,Log.IGNORED,ignored);
+        if (_logger.isLoggable(Level.FINEST))
+            log(Level.FINEST,Log.IGNORED,ignored);
     }
 
     private String format(String msg, Object... args)

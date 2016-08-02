@@ -35,6 +35,8 @@ import org.eclipse.jetty.util.annotation.ManagedAttribute;
 import org.eclipse.jetty.util.annotation.ManagedObject;
 import org.eclipse.jetty.util.annotation.Name;
 import org.eclipse.jetty.util.component.LifeCycle;
+import org.eclipse.jetty.util.thread.ExecutionStrategy;
+import org.eclipse.jetty.util.thread.strategy.ProduceExecuteConsume;
 
 @ManagedObject
 public abstract class AbstractHTTP2ServerConnectionFactory extends AbstractConnectionFactory
@@ -42,19 +44,24 @@ public abstract class AbstractHTTP2ServerConnectionFactory extends AbstractConne
     private final Connection.Listener connectionListener = new ConnectionListener();
     private final HttpConfiguration httpConfiguration;
     private int maxDynamicTableSize = 4096;
-    private int initialStreamSendWindow = FlowControlStrategy.DEFAULT_WINDOW_SIZE;
+    private int initialStreamRecvWindow = FlowControlStrategy.DEFAULT_WINDOW_SIZE;
+    private int initialSessionRecvWindow = FlowControlStrategy.DEFAULT_WINDOW_SIZE;
     private int maxConcurrentStreams = -1;
     private int maxHeaderBlockFragment = 0;
     private FlowControlStrategy.Factory flowControlStrategyFactory = () -> new BufferingFlowControlStrategy(0.5F);
+    private ExecutionStrategy.Factory executionStrategyFactory = new ProduceExecuteConsume.Factory();
 
     public AbstractHTTP2ServerConnectionFactory(@Name("config") HttpConfiguration httpConfiguration)
     {
-        this(httpConfiguration,"h2","h2-17","h2-16","h2-15","h2-14");
+        this(httpConfiguration,"h2");
     }
 
     protected AbstractHTTP2ServerConnectionFactory(@Name("config") HttpConfiguration httpConfiguration, String... protocols)
     {
         super(protocols);
+        for (String p:protocols)
+            if (!HTTP2ServerConnection.isSupportedProtocol(p))
+                throw new IllegalArgumentException("Unsupported HTTP2 Protocol variant: "+p);
         this.httpConfiguration = Objects.requireNonNull(httpConfiguration);
         addBean(httpConfiguration);
     }
@@ -70,15 +77,46 @@ public abstract class AbstractHTTP2ServerConnectionFactory extends AbstractConne
         this.maxDynamicTableSize = maxDynamicTableSize;
     }
 
-    @ManagedAttribute("The initial size of stream's flow control send window")
-    public int getInitialStreamSendWindow()
+    @ManagedAttribute("The initial size of session's flow control receive window")
+    public int getInitialSessionRecvWindow()
     {
-        return initialStreamSendWindow;
+        return initialSessionRecvWindow;
     }
 
+    public void setInitialSessionRecvWindow(int initialSessionRecvWindow)
+    {
+        this.initialSessionRecvWindow = initialSessionRecvWindow;
+    }
+
+    @ManagedAttribute("The initial size of stream's flow control receive window")
+    public int getInitialStreamRecvWindow()
+    {
+        return initialStreamRecvWindow;
+    }
+
+    public void setInitialStreamRecvWindow(int initialStreamRecvWindow)
+    {
+        this.initialStreamRecvWindow = initialStreamRecvWindow;
+    }
+
+    /**
+     * @deprecated use {@link #getInitialStreamRecvWindow()} instead,
+     * since "send" is meant on the client, but this is the server configuration
+     */
+    @Deprecated
+    public int getInitialStreamSendWindow()
+    {
+        return getInitialStreamRecvWindow();
+    }
+
+    /**
+     * @deprecated use {@link #setInitialStreamRecvWindow(int)} instead,
+     * since "send" is meant on the client, but this is the server configuration
+     */
+    @Deprecated
     public void setInitialStreamSendWindow(int initialStreamSendWindow)
     {
-        this.initialStreamSendWindow = initialStreamSendWindow;
+        setInitialStreamRecvWindow(initialStreamSendWindow);
     }
 
     @ManagedAttribute("The max number of concurrent streams per session")
@@ -123,9 +161,7 @@ public abstract class AbstractHTTP2ServerConnectionFactory extends AbstractConne
         ServerSessionListener listener = newSessionListener(connector, endPoint);
 
         Generator generator = new Generator(connector.getByteBufferPool(), getMaxDynamicTableSize(), getMaxHeaderBlockFragment());
-        FlowControlStrategy flowControl = newFlowControlStrategy();
-        if (flowControl == null)
-            flowControl = getFlowControlStrategyFactory().newFlowControlStrategy();
+        FlowControlStrategy flowControl = getFlowControlStrategyFactory().newFlowControlStrategy();
         HTTP2ServerSession session = new HTTP2ServerSession(connector.getScheduler(), endPoint, generator, listener, flowControl);
         session.setMaxLocalStreams(getMaxConcurrentStreams());
         session.setMaxRemoteStreams(getMaxConcurrentStreams());
@@ -134,21 +170,13 @@ public abstract class AbstractHTTP2ServerConnectionFactory extends AbstractConne
         // the typical case is that the connection will be busier and the
         // stream idle timeout will expire earlier that the connection's.
         session.setStreamIdleTimeout(endPoint.getIdleTimeout());
+        session.setInitialSessionRecvWindow(getInitialSessionRecvWindow());
 
         ServerParser parser = newServerParser(connector, session);
         HTTP2Connection connection = new HTTP2ServerConnection(connector.getByteBufferPool(), connector.getExecutor(),
                         endPoint, httpConfiguration, parser, session, getInputBufferSize(), listener);
         connection.addListener(connectionListener);
         return configure(connection, connector, endPoint);
-    }
-
-    /**
-     * @deprecated use {@link #setFlowControlStrategyFactory(FlowControlStrategy.Factory)} instead
-     */
-    @Deprecated
-    protected FlowControlStrategy newFlowControlStrategy()
-    {
-        return null;
     }
 
     protected abstract ServerSessionListener newSessionListener(Connector connector, EndPoint endPoint);

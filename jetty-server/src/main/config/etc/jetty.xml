@@ -89,6 +89,7 @@
       <Set name="delayDispatchUntilContent"><Property name="jetty.httpConfig.delayDispatchUntilContent" deprecated="jetty.delayDispatchUntilContent" default="true"/></Set>
       <Set name="maxErrorDispatches"><Property name="jetty.httpConfig.maxErrorDispatches" default="10"/></Set>
       <Set name="blockingTimeout"><Property name="jetty.httpConfig.blockingTimeout" default="-1"/></Set>
+      <Set name="persistentConnectionsEnabled"><Property name="jetty.httpConfig.persistentConnectionsEnabled" default="true"/></Set>
     </New>
 
     <!-- =========================================================== -->
@@ -121,7 +122,7 @@
     <!-- extra server options                                        -->
     <!-- =========================================================== -->
     <Set name="stopAtShutdown"><Property name="jetty.server.stopAtShutdown" default="true"/></Set>
-    <Set name="stopTimeout">5000</Set>
+    <Set name="stopTimeout"><Property name="jetty.server.stopTimeout" default="5000"/></Set>
     <Set name="dumpAfterStart"><Property name="jetty.server.dumpAfterStart" deprecated="jetty.dump.start" default="false"/></Set>
     <Set name="dumpBeforeStop"><Property name="jetty.server.dumpBeforeStop" deprecated="jetty.dump.stop" default="false"/></Set>
 

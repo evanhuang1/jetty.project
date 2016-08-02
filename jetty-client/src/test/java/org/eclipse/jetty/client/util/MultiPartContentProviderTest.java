@@ -43,7 +43,6 @@ import javax.servlet.http.HttpServletResponse;
 import javax.servlet.http.Part;
 
 import org.eclipse.jetty.client.AbstractHttpClientServerTest;
-import org.eclipse.jetty.client.api.ContentProvider;
 import org.eclipse.jetty.client.api.ContentResponse;
 import org.eclipse.jetty.http.HttpFields;
 import org.eclipse.jetty.http.HttpHeader;
@@ -186,11 +185,9 @@ public class MultiPartContentProviderTest extends AbstractHttpClientServerTest
                 .content(multiPart)
                 .send(result ->
                 {
-                    if (result.isSucceeded())
-                    {
-                        Assert.assertEquals(200, result.getResponse().getStatus());
-                        responseLatch.countDown();
-                    }
+                    Assert.assertTrue(String.valueOf(result.getFailure()), result.isSucceeded());
+                    Assert.assertEquals(200, result.getResponse().getStatus());
+                    responseLatch.countDown();
                 });
 
         // Wait until the request has been sent.
@@ -284,7 +281,8 @@ public class MultiPartContentProviderTest extends AbstractHttpClientServerTest
         });
 
         MultiPartContentProvider multiPart = new MultiPartContentProvider();
-        ContentProvider content = new PathContentProvider(contentType, tmpPath);
+        PathContentProvider content = new PathContentProvider(contentType, tmpPath);
+        content.setByteBufferPool(client.getByteBufferPool());
         multiPart.addFilePart(name, tmpPath.getFileName().toString(), content, null);
         multiPart.close();
         ContentResponse response = client.newRequest("localhost", connector.getLocalPort())
@@ -408,11 +406,9 @@ public class MultiPartContentProviderTest extends AbstractHttpClientServerTest
                 .content(multiPart)
                 .send(result ->
                 {
-                    if (result.isSucceeded())
-                    {
-                        Assert.assertEquals(200, result.getResponse().getStatus());
-                        responseLatch.countDown();
-                    }
+                    Assert.assertTrue(String.valueOf(result.getFailure()), result.isSucceeded());
+                    Assert.assertEquals(200, result.getResponse().getStatus());
+                    responseLatch.countDown();
                 });
 
         // Wait until the request has been sent.

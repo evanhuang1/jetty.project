@@ -21,7 +21,6 @@ package org.eclipse.jetty.server.session;
 import org.eclipse.jetty.server.NetworkConnector;
 import org.eclipse.jetty.server.Server;
 import org.eclipse.jetty.server.SessionIdManager;
-import org.eclipse.jetty.server.SessionManager;
 import org.eclipse.jetty.server.handler.ContextHandlerCollection;
 import org.eclipse.jetty.servlet.ServletContextHandler;
 import org.eclipse.jetty.webapp.WebAppContext;
@@ -35,13 +34,19 @@ import org.eclipse.jetty.webapp.WebAppContext;
 public abstract class AbstractTestServer
 {
     public static int DEFAULT_MAX_INACTIVE = 30;
-    public static int DEFAULT_SCAVENGE = 10;
+    public static int DEFAULT_SCAVENGE_SEC = 10;
+    public static int DEFAULT_EVICTIONPOLICY = SessionCache.NEVER_EVICT;
+    
+    protected static int __workers=0;
     
     protected final Server _server;
     protected final int _maxInactivePeriod;
+    protected final int _evictionPolicy;
     protected final int _scavengePeriod;
     protected final ContextHandlerCollection _contexts;
     protected SessionIdManager _sessionIdManager;
+    private HouseKeeper _housekeeper;
+    protected Object _config;
 
   
     
@@ -62,32 +67,42 @@ public abstract class AbstractTestServer
     }
 
     
-    
-    public AbstractTestServer(int port)
-    {
-        this(port, DEFAULT_MAX_INACTIVE, DEFAULT_SCAVENGE);
-    }
 
-    public AbstractTestServer(int port, int maxInactivePeriod, int scavengePeriod)
+    public AbstractTestServer(int port, int maxInactivePeriod, int scavengePeriod, int evictionPolicy)
     {
-        this (port, maxInactivePeriod, scavengePeriod, null);
+        this (port, maxInactivePeriod, scavengePeriod, evictionPolicy, null);
     }
     
-    public AbstractTestServer(int port, int maxInactivePeriod, int scavengePeriod, Object sessionIdMgrConfig)
+    public AbstractTestServer(int port, int maxInactivePeriod, int scavengePeriod, int evictionPolicy, Object cfg)
     {
         _server = new Server(port);
         _maxInactivePeriod = maxInactivePeriod;
         _scavengePeriod = scavengePeriod;
+        _evictionPolicy = evictionPolicy;
         _contexts = new ContextHandlerCollection();
-        _sessionIdManager = newSessionIdManager(sessionIdMgrConfig);
+        _config = cfg;
+        _sessionIdManager = newSessionIdManager();
         _server.setSessionIdManager(_sessionIdManager);
+        ((DefaultSessionIdManager) _sessionIdManager).setServer(_server);
+        _housekeeper = new HouseKeeper();
+        _housekeeper.setIntervalSec(_scavengePeriod);
+        ((DefaultSessionIdManager)_sessionIdManager).setSessionHouseKeeper(_housekeeper);
     }
     
-    
 
-    public abstract SessionIdManager newSessionIdManager(Object config);
-    public abstract SessionManager newSessionManager();
-    public abstract SessionHandler newSessionHandler(SessionManager sessionManager);
+
+    /**
+     * @return
+     */
+    public SessionIdManager newSessionIdManager()
+    {
+        DefaultSessionIdManager idManager = new DefaultSessionIdManager(getServer());
+        idManager.setWorkerName("w"+(__workers++));
+        return idManager;
+    }
+
+
+    public abstract SessionHandler newSessionHandler();
 
 
     public void start() throws Exception
@@ -95,6 +110,11 @@ public abstract class AbstractTestServer
         // server -> contexts collection -> context handler -> session handler -> servlet handler
         _server.setHandler(_contexts);
         _server.start();
+    }
+    
+    public HouseKeeper getHouseKeeper()
+    {
+        return _housekeeper;
     }
     
     public int getPort()
@@ -105,13 +125,10 @@ public abstract class AbstractTestServer
     public ServletContextHandler addContext(String contextPath)
     {
         ServletContextHandler context = new ServletContextHandler(_contexts, contextPath);
-
-        SessionManager sessionManager = newSessionManager();
-        sessionManager.setSessionIdManager(_sessionIdManager);
-        sessionManager.setMaxInactiveInterval(_maxInactivePeriod);
-
-        SessionHandler sessionHandler = newSessionHandler(sessionManager);
-        sessionManager.setSessionHandler(sessionHandler);
+        SessionHandler sessionHandler = newSessionHandler();
+        sessionHandler.setSessionIdManager(_sessionIdManager);
+        sessionHandler.setMaxInactiveInterval(_maxInactivePeriod);
+        sessionHandler.getSessionCache().setEvictionPolicy(_evictionPolicy);
         context.setSessionHandler(sessionHandler);
 
         return context;
@@ -130,13 +147,10 @@ public abstract class AbstractTestServer
     public WebAppContext addWebAppContext(String warPath, String contextPath)
     {
         WebAppContext context = new WebAppContext(_contexts, warPath, contextPath);
-
-        SessionManager sessionManager = newSessionManager();
-        sessionManager.setSessionIdManager(_sessionIdManager);
-        sessionManager.setMaxInactiveInterval(_maxInactivePeriod);
-
-        SessionHandler sessionHandler = newSessionHandler(sessionManager);
-        sessionManager.setSessionHandler(sessionHandler);
+        SessionHandler sessionHandler = newSessionHandler();
+        sessionHandler.setSessionIdManager(_sessionIdManager);
+        sessionHandler.setMaxInactiveInterval(_maxInactivePeriod);   
+        sessionHandler.getSessionCache().setEvictionPolicy(_evictionPolicy);
         context.setSessionHandler(sessionHandler);
 
         return context;

@@ -119,6 +119,7 @@ public class HttpURI
     public HttpURI(HttpURI uri)
     {
         this(uri._scheme,uri._host,uri._port,uri._path,uri._param,uri._query,uri._fragment);
+        _uri=uri._uri;
     }
     
     /* ------------------------------------------------------------ */
@@ -176,6 +177,24 @@ public class HttpURI
     }
 
     /* ------------------------------------------------------------ */
+    /**
+     * Parse according to https://tools.ietf.org/html/rfc7230#section-5.3
+     * @param method the request method
+     * @param uri the request uri
+     */
+    public void parseRequestTarget(String method,String uri)
+    {
+        clear();
+        _uri=uri;
+
+        if (HttpMethod.CONNECT.is(method))
+            _path=uri;
+        else
+            parse(uri.startsWith("/")?State.PATH:State.START,uri,0,uri.length());
+    }
+
+    /* ------------------------------------------------------------ */
+    @Deprecated
     public void parseConnect(String uri)
     {
         clear();
@@ -458,7 +477,7 @@ public class HttpURI
 
                 case ASTERISK:
                 {
-                    throw new IllegalArgumentException("only '*'");
+                    throw new IllegalArgumentException("Bad character '*'");
                 }
                 
                 case FRAGMENT:

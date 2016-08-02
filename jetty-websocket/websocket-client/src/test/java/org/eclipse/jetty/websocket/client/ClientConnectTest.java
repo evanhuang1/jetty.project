@@ -129,7 +129,7 @@ public class ClientConnectTest
         IBlockheadServerConnection connection = server.accept();
         connection.upgrade();
 
-        Session sess = future.get(500,TimeUnit.MILLISECONDS);
+        Session sess = future.get(30,TimeUnit.SECONDS);
         
         sess.close();
         
@@ -153,7 +153,7 @@ public class ClientConnectTest
         // The attempt to get upgrade response future should throw error
         try
         {
-            future.get(500,TimeUnit.MILLISECONDS);
+            future.get(30,TimeUnit.SECONDS);
             Assert.fail("Expected ExecutionException -> UpgradeException");
         }
         catch (ExecutionException e)
@@ -182,7 +182,7 @@ public class ClientConnectTest
         // The attempt to get upgrade response future should throw error
         try
         {
-            future.get(500,TimeUnit.MILLISECONDS);
+            future.get(30,TimeUnit.SECONDS);
             Assert.fail("Expected ExecutionException -> UpgradeException");
         }
         catch (ExecutionException e)
@@ -218,7 +218,7 @@ public class ClientConnectTest
         // The attempt to get upgrade response future should throw error
         try
         {
-            future.get(500,TimeUnit.MILLISECONDS);
+            future.get(30,TimeUnit.SECONDS);
             Assert.fail("Expected ExecutionException -> UpgradeException");
         }
         catch (ExecutionException e)
@@ -254,7 +254,7 @@ public class ClientConnectTest
         // The attempt to get upgrade response future should throw error
         try
         {
-            future.get(500,TimeUnit.MILLISECONDS);
+            future.get(30,TimeUnit.SECONDS);
             Assert.fail("Expected ExecutionException -> UpgradeException");
         }
         catch (ExecutionException e)
@@ -290,7 +290,7 @@ public class ClientConnectTest
         // The attempt to get upgrade response future should throw error
         try
         {
-            future.get(500,TimeUnit.MILLISECONDS);
+            future.get(30,TimeUnit.SECONDS);
             Assert.fail("Expected ExecutionException -> UpgradeException");
         }
         catch (ExecutionException e)
@@ -319,7 +319,7 @@ public class ClientConnectTest
         // The attempt to get upgrade response future should throw error
         try
         {
-            future.get(500,TimeUnit.MILLISECONDS);
+            future.get(30,TimeUnit.SECONDS);
             Assert.fail("Expected ExecutionException -> UpgradeException");
         }
         catch (ExecutionException e)
@@ -345,7 +345,7 @@ public class ClientConnectTest
 
         try
         {
-            future.get(500,TimeUnit.MILLISECONDS);
+            future.get(3,TimeUnit.SECONDS);
             Assert.fail("Should have Timed Out");
         }
         catch (ExecutionException e)
@@ -374,7 +374,7 @@ public class ClientConnectTest
             Future<Session> future = client.connect(wsocket,wsUri);
 
             // The attempt to get upgrade response future should throw error
-            future.get(1000,TimeUnit.MILLISECONDS);
+            future.get(3,TimeUnit.SECONDS);
             Assert.fail("Expected ExecutionException -> ConnectException");
         }
         catch (ConnectException e)
@@ -413,7 +413,7 @@ public class ClientConnectTest
         // The attempt to get upgrade response future should throw error
         try
         {
-            future.get(500,TimeUnit.MILLISECONDS);
+            future.get(3,TimeUnit.SECONDS);
             Assert.fail("Expected ExecutionException -> TimeoutException");
         }
         catch (ExecutionException e)

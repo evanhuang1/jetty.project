@@ -29,7 +29,9 @@ import javax.servlet.ServletException;
 import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpServletResponse;
 
+import org.eclipse.jetty.http.HttpCompliance;
 import org.eclipse.jetty.http.HttpVersion;
+import org.eclipse.jetty.io.ChannelEndPoint;
 import org.eclipse.jetty.io.Connection;
 import org.eclipse.jetty.io.EndPoint;
 import org.eclipse.jetty.io.ManagedSelector;
@@ -60,7 +62,7 @@ public class ExtendedServerTest extends HttpServerTestBase
         {
 
             @Override
-            protected SelectChannelEndPoint newEndPoint(SocketChannel channel, ManagedSelector selectSet, SelectionKey key) throws IOException
+            protected ChannelEndPoint newEndPoint(SocketChannel channel, ManagedSelector selectSet, SelectionKey key) throws IOException
             {
                 return new ExtendedEndPoint(channel,selectSet,key, getScheduler(), getIdleTimeout());
             }
@@ -94,7 +96,7 @@ public class ExtendedServerTest extends HttpServerTestBase
     {
         public ExtendedHttpConnection(HttpConfiguration config, Connector connector, EndPoint endPoint)
         {
-            super(config,connector,endPoint);
+            super(config,connector,endPoint,HttpCompliance.RFC7230,false);
         }
 
         @Override

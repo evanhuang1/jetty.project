@@ -49,8 +49,8 @@ public class HTTP2ServerConnectionFactory extends AbstractHTTP2ServerConnectionF
     {
         super(httpConfiguration);
     }
-    
-    protected HTTP2ServerConnectionFactory(@Name("config") HttpConfiguration httpConfiguration,String... protocols)
+
+    public HTTP2ServerConnectionFactory(@Name("config") HttpConfiguration httpConfiguration,String... protocols)
     {
         super(httpConfiguration,protocols);
     }
@@ -64,8 +64,7 @@ public class HTTP2ServerConnectionFactory extends AbstractHTTP2ServerConnectionF
     @Override
     public boolean isAcceptable(String protocol, String tlsProtocol, String tlsCipher)
     {
-        // TODO remove this draft 14 protection
-        // Implement 9.2.2
+        // Implement 9.2.2 for draft 14
         boolean acceptable = "h2-14".equals(protocol) || !(HTTP2Cipher.isBlackListProtocol(tlsProtocol) && HTTP2Cipher.isBlackListCipher(tlsCipher));
         if (LOG.isDebugEnabled())
             LOG.debug("proto={} tls={} cipher={} 9.2.2-acceptable={}",protocol,tlsProtocol,tlsCipher,acceptable);
@@ -93,10 +92,11 @@ public class HTTP2ServerConnectionFactory extends AbstractHTTP2ServerConnectionF
         {
             Map<Integer, Integer> settings = new HashMap<>();
             settings.put(SettingsFrame.HEADER_TABLE_SIZE, getMaxDynamicTableSize());
-            settings.put(SettingsFrame.INITIAL_WINDOW_SIZE, getInitialStreamSendWindow());
+            settings.put(SettingsFrame.INITIAL_WINDOW_SIZE, getInitialStreamRecvWindow());
             int maxConcurrentStreams = getMaxConcurrentStreams();
             if (maxConcurrentStreams >= 0)
                 settings.put(SettingsFrame.MAX_CONCURRENT_STREAMS, maxConcurrentStreams);
+            settings.put(SettingsFrame.MAX_HEADER_LIST_SIZE, getHttpConfiguration().getRequestHeaderSize());
             return settings;
         }
 

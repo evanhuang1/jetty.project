@@ -61,9 +61,10 @@ public class MessageOutputStreamTest
     private LocalWebSocketSession session;
 
     @After
-    public void closeSession()
+    public void closeSession() throws Exception
     {
         session.close();
+        session.stop();
     }
 
     @Before
@@ -89,6 +90,8 @@ public class MessageOutputStreamTest
         session.setPolicy(policy);
         // talk to our remote socket
         session.setOutgoingHandler(socketPipe);
+        // start session
+        session.start();
         // open connection
         session.open();
     }

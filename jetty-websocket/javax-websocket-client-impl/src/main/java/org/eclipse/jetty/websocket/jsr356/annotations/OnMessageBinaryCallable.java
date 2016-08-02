@@ -21,9 +21,9 @@ package org.eclipse.jetty.websocket.jsr356.annotations;
 import javax.websocket.OnMessage;
 
 /**
- * Callable for {@link OnMessage} annotated methods with a whole or partial binary messages.
+ * Callable for {@link javax.websocket.OnMessage} annotated methods with a whole or partial binary messages.
  * <p>
- * Not for use with {@link java.io.InputStream} based {@link OnMessage} method objects.
+ * Not for use with {@link java.io.InputStream} based {@link javax.websocket.OnMessage} method objects.
  * 
  * @see javax.websocket.Decoder.Binary
  */

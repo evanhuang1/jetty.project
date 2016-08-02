@@ -18,6 +18,8 @@
 
 package org.eclipse.jetty.http2.client.http;
 
+import java.net.URI;
+
 import org.eclipse.jetty.client.HttpContent;
 import org.eclipse.jetty.client.HttpExchange;
 import org.eclipse.jetty.client.HttpSender;
@@ -33,8 +35,6 @@ import org.eclipse.jetty.util.Promise;
 
 public class HttpSenderOverHTTP2 extends HttpSender
 {
-    private Stream stream;
-
     public HttpSenderOverHTTP2(HttpChannelOverHTTP2 channel)
     {
         super(channel);
@@ -49,8 +49,9 @@ public class HttpSenderOverHTTP2 extends HttpSender
     @Override
     protected void sendHeaders(HttpExchange exchange, final HttpContent content, final Callback callback)
     {
-        final Request request = exchange.getRequest();
-        HttpURI uri = new HttpURI(request.getScheme(), request.getHost(), request.getPort(), request.getPath(), null, request.getQuery(), null);
+        Request request = exchange.getRequest();
+        String path = relativize(request.getPath());
+        HttpURI uri = new HttpURI(request.getScheme(), request.getHost(), request.getPort(), path, null, request.getQuery(), null);
         MetaData.Request metaData = new MetaData.Request(request.getMethod(), uri, HttpVersion.HTTP_2, request.getHeaders());
         HeadersFrame headersFrame = new HeadersFrame(metaData, null, !content.hasContent());
         HttpChannelOverHTTP2 channel = getHttpChannel();
@@ -59,7 +60,7 @@ public class HttpSenderOverHTTP2 extends HttpSender
             @Override
             public void succeeded(Stream stream)
             {
-                HttpSenderOverHTTP2.this.stream = stream;
+                getHttpChannel().setStream(stream);
                 stream.setIdleTimeout(request.getIdleTimeout());
 
                 if (content.hasContent() && !expects100Continue(request))
@@ -86,6 +87,24 @@ public class HttpSenderOverHTTP2 extends HttpSender
         channel.getSession().newStream(headersFrame, promise, channel.getStreamListener());
     }
 
+    private String relativize(String path)
+    {
+        try
+        {
+            String result = path;
+            URI uri = URI.create(result);
+            if (uri.isAbsolute())
+                result = uri.getPath();
+            return result.isEmpty() ? "/" : result;
+        }
+        catch (Throwable x)
+        {
+            if (LOG.isDebugEnabled())
+                LOG.debug("Could not relativize " + path);
+            return path;
+        }
+    }
+
     @Override
     protected void sendContent(HttpExchange exchange, HttpContent content, Callback callback)
     {
@@ -95,15 +114,9 @@ public class HttpSenderOverHTTP2 extends HttpSender
         }
         else
         {
+            Stream stream = getHttpChannel().getStream();
             DataFrame frame = new DataFrame(stream.getId(), content.getByteBuffer(), content.isLast());
             stream.data(frame, callback);
         }
-    }
-
-    @Override
-    protected void reset()
-    {
-        super.reset();
-        stream = null;
     }
 }

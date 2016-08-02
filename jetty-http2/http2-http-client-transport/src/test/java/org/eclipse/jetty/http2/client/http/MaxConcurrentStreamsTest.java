@@ -28,6 +28,9 @@ import javax.servlet.http.HttpServletResponse;
 
 import org.eclipse.jetty.client.api.ContentResponse;
 import org.eclipse.jetty.http.HttpStatus;
+import org.eclipse.jetty.http2.server.HTTP2ServerConnectionFactory;
+import org.eclipse.jetty.server.Handler;
+import org.eclipse.jetty.server.HttpConfiguration;
 import org.eclipse.jetty.server.Request;
 import org.eclipse.jetty.server.handler.AbstractHandler;
 import org.junit.Assert;
@@ -35,6 +38,17 @@ import org.junit.Test;
 
 public class MaxConcurrentStreamsTest extends AbstractTest
 {
+    private void start(int maxConcurrentStreams, Handler handler) throws Exception
+    {
+        HTTP2ServerConnectionFactory http2 = new HTTP2ServerConnectionFactory(new HttpConfiguration());
+        http2.setMaxConcurrentStreams(maxConcurrentStreams);
+        prepareServer(http2);
+        server.setHandler(handler);
+        server.start();
+        prepareClient();
+        client.start();
+    }
+
     @Test
     public void testOneConcurrentStream() throws Exception
     {
@@ -49,6 +63,7 @@ public class MaxConcurrentStreamsTest extends AbstractTest
                 sleep(sleep);
             }
         });
+        client.setMaxConnectionsPerDestination(1);
 
         // Prime the connection so that the maxConcurrentStream setting arrives to the client.
         client.newRequest("localhost", connector.getLocalPort()).path("/prime").send();
@@ -91,6 +106,7 @@ public class MaxConcurrentStreamsTest extends AbstractTest
                 sleep(sleep);
             }
         });
+        client.setMaxConnectionsPerDestination(1);
 
         // Prime the connection so that the maxConcurrentStream setting arrives to the client.
         client.newRequest("localhost", connector.getLocalPort()).path("/prime").send();
@@ -135,6 +151,7 @@ public class MaxConcurrentStreamsTest extends AbstractTest
                 sleep(sleep);
             }
         });
+        client.setMaxConnectionsPerDestination(1);
 
         // Prime the connection so that the maxConcurrentStream setting arrives to the client.
         client.newRequest("localhost", connector.getLocalPort()).path("/prime").send();
@@ -149,6 +166,35 @@ public class MaxConcurrentStreamsTest extends AbstractTest
         ContentResponse response = client.newRequest("localhost", connector.getLocalPort()).path("/check").send();
 
         Assert.assertEquals(HttpStatus.OK_200, response.getStatus());
+    }
+
+    @Test
+    public void testMultipleRequestsQueuedOnConnect() throws Exception
+    {
+        int maxConcurrent = 10;
+        long sleep = 500;
+        start(maxConcurrent, new AbstractHandler()
+        {
+            @Override
+            public void handle(String target, Request baseRequest, HttpServletRequest request, HttpServletResponse response) throws IOException, ServletException
+            {
+                baseRequest.setHandled(true);
+                sleep(sleep);
+            }
+        });
+        client.setMaxConnectionsPerDestination(1);
+
+        // The first request will open the connection, the others will be queued.
+        CountDownLatch latch = new CountDownLatch(maxConcurrent);
+        for (int i = 0; i < maxConcurrent; ++i)
+        {
+            client.newRequest("localhost", connector.getLocalPort())
+                    .path("/" + i)
+                    .send(result -> latch.countDown());
+        }
+
+        // The requests should be processed in parallel, not sequentially.
+        Assert.assertTrue(latch.await(maxConcurrent * sleep / 2, TimeUnit.MILLISECONDS));
     }
 
     private void sleep(long time)

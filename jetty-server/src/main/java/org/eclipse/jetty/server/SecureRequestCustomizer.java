@@ -30,6 +30,7 @@ import org.eclipse.jetty.http.BadMessageException;
 import org.eclipse.jetty.http.HttpField;
 import org.eclipse.jetty.http.HttpHeader;
 import org.eclipse.jetty.http.HttpScheme;
+import org.eclipse.jetty.io.EndPoint;
 import org.eclipse.jetty.http.PreEncodedHttpField;
 import org.eclipse.jetty.io.ssl.SslConnection;
 import org.eclipse.jetty.io.ssl.SslConnection.DecryptedEndPoint;
@@ -54,6 +55,8 @@ public class SecureRequestCustomizer implements HttpConfiguration.Customizer
      * The name of the SSLSession attribute that will contain any cached information.
      */
     public static final String CACHED_INFO_ATTR = CachedInfo.class.getName();
+
+    private String sslSessionAttribute = "org.eclipse.jetty.servlet.request.ssl_session";
 
     private boolean _sniHostCheck;
     private long _stsMaxAge=-1;
@@ -159,22 +162,27 @@ public class SecureRequestCustomizer implements HttpConfiguration.Customizer
     @Override
     public void customize(Connector connector, HttpConfiguration channelConfig, Request request)
     {
-        if (request.getHttpChannel().getEndPoint() instanceof DecryptedEndPoint)
+        EndPoint endp = request.getHttpChannel().getEndPoint();
+        if (endp instanceof DecryptedEndPoint)
         {
-            
-            if (request.getHttpURI().getScheme()==null)
-                request.setScheme(HttpScheme.HTTPS.asString());
-            
-            SslConnection.DecryptedEndPoint ssl_endp = (DecryptedEndPoint)request.getHttpChannel().getEndPoint();
+            SslConnection.DecryptedEndPoint ssl_endp = (DecryptedEndPoint)endp;
             SslConnection sslConnection = ssl_endp.getSslConnection();
             SSLEngine sslEngine=sslConnection.getSSLEngine();
             customize(sslEngine,request);
+
+            if (request.getHttpURI().getScheme()==null)
+                request.setScheme(HttpScheme.HTTPS.asString());
+        }
+        else if (endp instanceof ProxyConnectionFactory.ProxyEndPoint)
+        {
+            ProxyConnectionFactory.ProxyEndPoint proxy = (ProxyConnectionFactory.ProxyEndPoint)endp;
+            if (request.getHttpURI().getScheme()==null && proxy.getAttribute(ProxyConnectionFactory.TLS_VERSION)!=null)
+                request.setScheme(HttpScheme.HTTPS.asString());       
         }
 
         if (HttpScheme.HTTPS.is(request.getScheme()))
             customizeSecure(request);
     }
-
 
     /**
      * Customizes the request attributes for general secure settings.
@@ -190,8 +198,7 @@ public class SecureRequestCustomizer implements HttpConfiguration.Customizer
         if (_stsField!=null)
             request.getResponse().getHttpFields().add(_stsField);
     }
-    
-    
+
     /**
      * <p>
      * Customizes the request attributes to be set for SSL requests.
@@ -216,7 +223,6 @@ public class SecureRequestCustomizer implements HttpConfiguration.Customizer
      */
     protected void customize(SSLEngine sslEngine, Request request)
     {
-        request.setScheme(HttpScheme.HTTPS.asString());
         SSLSession sslSession = sslEngine.getSession();
 
         if (_sniHostCheck)
@@ -264,11 +270,24 @@ public class SecureRequestCustomizer implements HttpConfiguration.Customizer
             request.setAttribute("javax.servlet.request.cipher_suite",cipherSuite);
             request.setAttribute("javax.servlet.request.key_size",keySize);
             request.setAttribute("javax.servlet.request.ssl_session_id", idStr);
+            String sessionAttribute = getSslSessionAttribute();
+            if (sessionAttribute != null && !sessionAttribute.isEmpty())
+                request.setAttribute(sessionAttribute, sslSession);
         }
         catch (Exception e)
         {
             LOG.warn(Log.EXCEPTION,e);
         }
+    }
+    
+    public void setSslSessionAttribute(String attribute)
+    {
+        this.sslSessionAttribute = attribute;
+    }
+
+    public String getSslSessionAttribute()
+    {
+        return sslSessionAttribute;
     }
 
     @Override

@@ -32,30 +32,20 @@ import org.junit.Test;
  */
 public class ImmortalSessionTest extends AbstractImmortalSessionTest
 {
-    static GCloudSessionTestSupport _testSupport;
-
-    /**
-     * @throws Exception
-     */
-    @BeforeClass
-    public static void setup () throws Exception
-    {
-        _testSupport = new GCloudSessionTestSupport();
-        _testSupport.setUp();
-    }
+   
     
     @AfterClass
     public static void teardown () throws Exception
     {
-        _testSupport.tearDown();
+        GCloudTestSuite.__testSupport.deleteSessions();
     }
     /** 
      * @see org.eclipse.jetty.server.session.AbstractImmortalSessionTest#createServer(int, int, int)
      */
     @Override
-    public AbstractTestServer createServer(int port, int maxInactiveMs, int scavengeMs)
+    public AbstractTestServer createServer(int port, int maxInactiveMs, int scavengeMs,int evictionPolicy)
     {
-       return new GCloudTestServer(port, port, scavengeMs, _testSupport.getConfiguration());
+       return new GCloudTestServer(port, maxInactiveMs, scavengeMs, evictionPolicy);
     }
 
     @Test

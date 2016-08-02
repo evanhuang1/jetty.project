@@ -28,7 +28,9 @@ import org.eclipse.jetty.deploy.bindings.DebugListenerBinding;
 import org.eclipse.jetty.deploy.providers.WebAppProvider;
 import org.eclipse.jetty.http.HttpVersion;
 import org.eclipse.jetty.jmx.MBeanContainer;
+import org.eclipse.jetty.rewrite.handler.RewriteHandler;
 import org.eclipse.jetty.security.HashLoginService;
+import org.eclipse.jetty.server.ConnectorStatistics;
 import org.eclipse.jetty.server.DebugListener;
 import org.eclipse.jetty.server.Handler;
 import org.eclipse.jetty.server.HttpConfiguration;
@@ -62,11 +64,17 @@ public class LikeJettyXml
         
         // Find jetty home and base directories
         String homePath = System.getProperty("jetty.home", jettyHomeBuild);
-        File homeDir = new File(homePath);
-        if (!homeDir.exists())
+        File start_jar = new File(homePath,"start.jar");
+        if (!start_jar.exists())
         {
-            throw new FileNotFoundException(homeDir.getAbsolutePath());
+            homePath = jettyHomeBuild = "jetty-distribution/target/distribution";
+            start_jar = new File(homePath,"start.jar");
+            if (!start_jar.exists())
+                throw new FileNotFoundException(start_jar.toString());
         }
+
+        File homeDir = new File(homePath);
+
         String basePath = System.getProperty("jetty.base", homeDir + "/demo-base");
         File baseDir = new File(basePath);
         if(!baseDir.exists())
@@ -157,7 +165,7 @@ public class LikeJettyXml
 
         // === jetty-deploy.xml ===
         DeploymentManager deployer = new DeploymentManager();
-        DebugListener debug = new DebugListener(System.out,true,true,true);
+        DebugListener debug = new DebugListener(System.err,true,true,true);
         server.addBean(debug);        
         deployer.addLifeCycleBinding(new DebugListenerBinding(debug));
         deployer.setContexts(contexts);
@@ -185,7 +193,12 @@ public class LikeJettyXml
         StatisticsHandler stats = new StatisticsHandler();
         stats.setHandler(server.getHandler());
         server.setHandler(stats);
+        ConnectorStatistics.addToAllConnectors(server);
 
+        // === Rewrite Handler
+        RewriteHandler rewrite = new RewriteHandler();
+        rewrite.setHandler(server.getHandler());
+        server.setHandler(rewrite);
 
         // === jetty-requestlog.xml ===
         NCSARequestLog requestLog = new NCSARequestLog();

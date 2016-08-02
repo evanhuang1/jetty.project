@@ -1,9 +1,7 @@
-#
-# SSL Keystore module
-#
-
-[name]
-ssl
+[description]
+Enables a TLS(SSL) Connector on the server.
+This may be used for HTTPS and/or HTTP2 by enabling
+the associated support modules.
 
 [depend]
 server
@@ -13,7 +11,7 @@ etc/jetty-ssl.xml
 etc/jetty-ssl-context.xml
 
 [files]
-http://git.eclipse.org/c/jetty/org.eclipse.jetty.project.git/plain/jetty-server/src/test/config/etc/keystore?id=${jetty.tag.version}|etc/keystore
+basehome:modules/ssl/keystore|etc/keystore
 
 [ini-template]
 ### TLS(SSL) Connector Configuration
@@ -90,3 +88,8 @@ http://git.eclipse.org/c/jetty/org.eclipse.jetty.project.git/plain/jetty-server/
 ## To configure Includes / Excludes for Cipher Suites or Protocols see tweak-ssl.xml example at
 ## https://www.eclipse.org/jetty/documentation/current/configuring-ssl.html#configuring-sslcontextfactory-cipherSuites
 
+## Set the size of the SslSession cache
+# jetty.sslContext.sslSessionCacheSize=-1
+
+## Set the timeout (in seconds) of the SslSession cache timeout
+# jetty.sslContext.sslSessionTimeout=-1

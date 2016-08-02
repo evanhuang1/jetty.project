@@ -18,6 +18,7 @@
 
 package org.eclipse.jetty.server;
 
+import static org.hamcrest.Matchers.is;
 import static org.hamcrest.Matchers.startsWith;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
@@ -39,6 +40,8 @@ import java.io.UnsupportedEncodingException;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Enumeration;
+import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -53,14 +56,16 @@ import javax.servlet.http.HttpServletResponse;
 import javax.servlet.http.Part;
 
 import org.eclipse.jetty.http.MimeTypes;
+import org.eclipse.jetty.server.LocalConnector.LocalEndPoint;
 import org.eclipse.jetty.server.handler.AbstractHandler;
 import org.eclipse.jetty.server.handler.ContextHandler;
+import org.eclipse.jetty.server.handler.ErrorHandler;
 import org.eclipse.jetty.util.IO;
 import org.eclipse.jetty.util.MultiPartInputStreamParser;
 import org.eclipse.jetty.util.Utf8Appendable;
 import org.eclipse.jetty.util.log.Log;
 import org.eclipse.jetty.util.log.Logger;
-import org.eclipse.jetty.util.log.StdErrLog;
+import org.eclipse.jetty.util.log.StacklessLogging;
 import org.hamcrest.Matchers;
 import org.junit.After;
 import org.junit.Before;
@@ -124,12 +129,11 @@ public class RequestTest
         "Connection: close\n"+
         "\n";
 
-        String responses=_connector.getResponses(request);
+        String responses=_connector.getResponse(request);
         assertTrue(responses.startsWith("HTTP/1.1 200"));
 
     }
 
-    @Ignore("Empty headers are not 7230 compliant")
     @Test
     public void testEmptyHeaders() throws Exception
     {
@@ -139,15 +143,24 @@ public class RequestTest
             public boolean check(HttpServletRequest request,HttpServletResponse response)
             {
                 assertNotNull(request.getLocale());
-                assertTrue(request.getLocales().hasMoreElements());
-                assertNull(request.getContentType());
+                assertTrue(request.getLocales().hasMoreElements()); // Default locale
+                assertEquals("",request.getContentType());
                 assertNull(request.getCharacterEncoding());
                 assertEquals(0,request.getQueryString().length());
                 assertEquals(-1,request.getContentLength());
                 assertNull(request.getCookies());
-                assertNull(request.getHeader("Name"));
-                assertFalse(request.getHeaders("Name").hasMoreElements());
-                assertEquals(-1,request.getDateHeader("Name"));
+                assertEquals("",request.getHeader("Name"));
+                assertTrue(request.getHeaders("Name").hasMoreElements()); // empty
+                try
+                {
+                    request.getDateHeader("Name");
+                    assertTrue(false);
+                }
+                catch(IllegalArgumentException e)
+                {
+                    
+                }
+                assertEquals(-1,request.getDateHeader("Other"));
                 return true;
             }
         };
@@ -161,7 +174,7 @@ public class RequestTest
         "Name: \n"+
         "\n";
 
-        String responses=_connector.getResponses(request);
+        String responses=_connector.getResponse(request);
         assertTrue(responses.startsWith("HTTP/1.1 200"));
     }
 
@@ -210,14 +223,51 @@ public class RequestTest
         "\r\n"+
         multipart;
 
-        String responses=_connector.getResponses(request);
+        String responses=_connector.getResponse(request);
         assertTrue(responses.startsWith("HTTP/1.1 200"));
+    }
+
+    @Test
+    public void testLocale() throws Exception
+    {
+        _handler._checker = new RequestTester()
+        {
+            @Override
+            public boolean check(HttpServletRequest request,HttpServletResponse response) throws IOException
+            {
+                assertThat(request.getLocale().getLanguage(),is("da"));
+                Enumeration<Locale> locales = request.getLocales();
+                Locale locale=locales.nextElement();
+                assertThat(locale.getLanguage(),is("da"));
+                assertThat(locale.getCountry(),is(""));
+                locale=locales.nextElement();
+                assertThat(locale.getLanguage(),is("en"));
+                assertThat(locale.getCountry(),is("AU"));
+                locale=locales.nextElement();
+                assertThat(locale.getLanguage(),is("en"));
+                assertThat(locale.getCountry(),is("GB"));
+                locale=locales.nextElement();
+                assertThat(locale.getLanguage(),is("en"));
+                assertThat(locale.getCountry(),is(""));
+                assertFalse(locales.hasMoreElements());
+                return true;
+            }
+        };
+
+        String request="GET / HTTP/1.1\r\n"+
+            "Host: whatever\r\n"+
+            "Connection: close\r\n"+
+            "Accept-Language: da, en-gb;q=0.8, en;q=0.7\r\n"+
+            "Accept-Language: XX;q=0, en-au;q=0.9\r\n"+
+            "\r\n";
+        String response = _connector.getResponse(request);
+        assertThat(response,Matchers.containsString(" 200 OK"));
     }
 
 
     @Test
     public void testMultiPart() throws Exception
-    {        
+    {
         final File testTmpDir = File.createTempFile("reqtest", null);
         if (testTmpDir.exists())
             testTmpDir.delete();
@@ -271,14 +321,14 @@ public class RequestTest
         "\r\n"+
         multipart;
 
-        String responses=_connector.getResponses(request);
+        String responses=_connector.getResponse(request);
         // System.err.println(responses);
         assertTrue(responses.startsWith("HTTP/1.1 200"));
     }
-    
+
     @Test
     public void testBadMultiPart() throws Exception
-    {        
+    {
         //a bad multipart where one of the fields has no name
         final File testTmpDir = File.createTempFile("badmptest", null);
         if (testTmpDir.exists())
@@ -331,9 +381,12 @@ public class RequestTest
         "\r\n"+
         multipart;
 
-        String responses=_connector.getResponses(request);
-        //System.err.println(responses);
-        assertTrue(responses.startsWith("HTTP/1.1 500"));
+        try(StacklessLogging stackless = new StacklessLogging(HttpChannel.class))
+        {
+            String responses=_connector.getResponse(request);
+            //System.err.println(responses);
+            assertTrue(responses.startsWith("HTTP/1.1 500"));
+        }
     }
 
 
@@ -359,7 +412,7 @@ public class RequestTest
         "\n";
 
         LOG.info("Expecting NotUtf8Exception in state 36...");
-        String responses=_connector.getResponses(request);
+        String responses=_connector.getResponse(request);
         assertThat(responses,startsWith("HTTP/1.1 200"));
     }
 
@@ -381,7 +434,7 @@ public class RequestTest
         "Connection: close\n"+
         "\n";
 
-        String responses=_connector.getResponses(request);
+        String responses=_connector.getResponse(request);
         assertThat(responses, Matchers.startsWith("HTTP/1.1 400"));
     }
 
@@ -400,7 +453,7 @@ public class RequestTest
             }
         };
 
-        _connector.getResponses(
+        LocalEndPoint endp = _connector.executeRequest(
                 "GET / HTTP/1.1\n"+
                 "Host: whatever\n"+
                 "Content-Type: text/test\n"+
@@ -423,6 +476,11 @@ public class RequestTest
                 "\n"
                 );
 
+        endp.getResponse();
+        endp.getResponse();
+        endp.getResponse();
+        endp.getResponse();
+        
         int i=0;
         assertEquals("text/test",results.get(i++));
         assertEquals(null,results.get(i++));
@@ -455,7 +513,7 @@ public class RequestTest
         };
 
         results.clear();
-        String response=_connector.getResponses(
+        String response=_connector.getResponse(
                 "GET / HTTP/1.1\n"+
                 "Host: myhost\n"+
                 "Connection: close\n"+
@@ -469,7 +527,7 @@ public class RequestTest
 
 
         results.clear();
-        response=_connector.getResponses(
+        response=_connector.getResponse(
                 "GET / HTTP/1.1\n"+
                 "Host: myhost:8888\n"+
                 "Connection: close\n"+
@@ -480,10 +538,10 @@ public class RequestTest
         assertEquals("0.0.0.0",results.get(i++));
         assertEquals("myhost",results.get(i++));
         assertEquals("8888",results.get(i++));
-        
+
 
         results.clear();
-        response=_connector.getResponses(
+        response=_connector.getResponse(
                 "GET http://myhost:8888/ HTTP/1.0\n"+
                 "\n");
         i=0;
@@ -492,9 +550,9 @@ public class RequestTest
         assertEquals("0.0.0.0",results.get(i++));
         assertEquals("myhost",results.get(i++));
         assertEquals("8888",results.get(i++));
-        
+
         results.clear();
-        response=_connector.getResponses(
+        response=_connector.getResponse(
                 "GET http://myhost:8888/ HTTP/1.1\n"+
                 "Host: wrong:666\n"+
                 "Connection: close\n"+
@@ -508,7 +566,7 @@ public class RequestTest
 
 
         results.clear();
-        response=_connector.getResponses(
+        response=_connector.getResponse(
                 "GET / HTTP/1.1\n"+
                 "Host: 1.2.3.4\n"+
                 "Connection: close\n"+
@@ -523,7 +581,7 @@ public class RequestTest
 
 
         results.clear();
-        response=_connector.getResponses(
+        response=_connector.getResponse(
                 "GET / HTTP/1.1\n"+
                 "Host: 1.2.3.4:8888\n"+
                 "Connection: close\n"+
@@ -537,7 +595,7 @@ public class RequestTest
 
 
         results.clear();
-        response=_connector.getResponses(
+        response=_connector.getResponse(
                 "GET / HTTP/1.1\n"+
                 "Host: [::1]\n"+
                 "Connection: close\n"+
@@ -551,7 +609,7 @@ public class RequestTest
 
 
         results.clear();
-        response=_connector.getResponses(
+        response=_connector.getResponse(
                 "GET / HTTP/1.1\n"+
                 "Host: [::1]:8888\n"+
                 "Connection: close\n"+
@@ -565,7 +623,7 @@ public class RequestTest
 
 
         results.clear();
-        response=_connector.getResponses(
+        response=_connector.getResponse(
                 "GET / HTTP/1.1\n"+
                 "Host: [::1]\n"+
                 "x-forwarded-for: remote\n"+
@@ -581,7 +639,7 @@ public class RequestTest
 
 
         results.clear();
-        response=_connector.getResponses(
+        response=_connector.getResponse(
                 "GET / HTTP/1.1\n"+
                 "Host: [::1]:8888\n"+
                 "Connection: close\n"+
@@ -635,7 +693,7 @@ public class RequestTest
             "\r\n"+
             content;
             Log.getRootLogger().debug("test l={}",l);
-            String response = _connector.getResponses(request);
+            String response = _connector.getResponse(request);
             Log.getRootLogger().debug(response);
             assertThat(response, Matchers.containsString(" 200 OK"));
             assertEquals(l,length.get());
@@ -665,7 +723,7 @@ public class RequestTest
             "Connection: close\r\n"+
             "\r\n"+
             content;
-        String response = _connector.getResponses(request);
+        String response = _connector.getResponse(request);
         assertThat(response,Matchers.containsString(" 200 OK"));
     }
 
@@ -689,7 +747,7 @@ public class RequestTest
             "Connection: close\r\n"+
             "\r\n"+
             content;
-        String response = _connector.getResponses(request);
+        String response = _connector.getResponse(request);
         assertThat(response,Matchers.containsString(" 200 OK"));
     }
 
@@ -715,10 +773,10 @@ public class RequestTest
             "Connection: close\r\n"+
             "\r\n"+
             content;
-        String response = _connector.getResponses(request);
+        String response = _connector.getResponse(request);
         assertThat(response,Matchers.containsString(" 200 OK"));
     }
-    
+
     @Test
     public void test8859EncodedForm() throws Exception
     {
@@ -743,10 +801,10 @@ public class RequestTest
             "Connection: close\r\n"+
             "\r\n"+
             content;
-        String response = _connector.getResponses(request);
+        String response = _connector.getResponse(request);
         assertThat(response,Matchers.containsString(" 200 OK"));
     }
-    
+
     @Test
     public void testUTF8EncodedForm() throws Exception
     {
@@ -771,11 +829,11 @@ public class RequestTest
             "Connection: close\r\n"+
             "\r\n"+
             content;
-        String response = _connector.getResponses(request);
+        String response = _connector.getResponse(request);
         assertThat(response,Matchers.containsString(" 200 OK"));
     }
-    
-    
+
+
     @Test
     public void testPartialRead() throws Exception
     {
@@ -798,7 +856,7 @@ public class RequestTest
         _server.setHandler(handler);
         _server.start();
 
-        String request="GET / HTTP/1.1\r\n"+
+        String requests="GET / HTTP/1.1\r\n"+
         "Host: whatever\r\n"+
         "Content-Type: text/plane\r\n"+
         "Content-Length: "+10+"\r\n"+
@@ -812,12 +870,13 @@ public class RequestTest
         "\r\n"+
         "ABCDEFGHIJ\r\n";
 
-        String responses = _connector.getResponses(request);
+        LocalEndPoint endp = _connector.executeRequest(requests);
+        String response = endp.getResponse()+endp.getResponse();
 
-        int index=responses.indexOf("read="+(int)'0');
+        int index=response.indexOf("read="+(int)'0');
         assertTrue(index>0);
 
-        index=responses.indexOf("read="+(int)'A',index+7);
+        index=response.indexOf("read="+(int)'A',index+7);
         assertTrue(index>0);
     }
 
@@ -854,15 +913,15 @@ public class RequestTest
         "\r\n"+
         "param=wrong\r\n";
 
-        String responses = _connector.getResponses(request);
+        String responses = _connector.getResponse(request);
 
         assertTrue(responses.indexOf("read='param=wrong' param=right")>0);
 
     }
-    
+
     @Test
     public void testSessionAfterRedirect() throws Exception
-    { 
+    {
         Handler handler = new AbstractHandler()
         {
             @Override
@@ -889,7 +948,7 @@ public class RequestTest
         _server.stop();
         _server.setHandler(handler);
         _server.start();
-        String response=_connector.getResponses("GET / HTTP/1.1\n"+
+        String response=_connector.getResponse("GET / HTTP/1.1\n"+
                                                 "Host: myhost\n"+
                                                 "Connection: close\n"+
                                                 "\n");
@@ -919,7 +978,7 @@ public class RequestTest
         _server.setHandler(handler);
         _server.start();
 
-        String request="GET / HTTP/1.1\r\n"+
+        String requests="GET / HTTP/1.1\r\n"+
         "Host: whatever\r\n"+
         "Content-Type: text/plane\r\n"+
         "Content-Length: "+10+"\r\n"+
@@ -933,7 +992,8 @@ public class RequestTest
         "\r\n"+
         "ABCDEFGHIJ\r\n";
 
-        String responses = _connector.getResponses(request);
+        LocalEndPoint endp = _connector.executeRequest(requests);
+        String responses = endp.getResponse()+endp.getResponse();
 
         int index=responses.indexOf("read="+(int)'0');
         assertTrue(index>0);
@@ -957,7 +1017,7 @@ public class RequestTest
             }
         };
 
-        response=_connector.getResponses(
+        response=_connector.getResponse(
                     "GET / HTTP/1.1\n"+
                     "Host: whatever\n"+
                     "\n",
@@ -967,7 +1027,7 @@ public class RequestTest
         assertThat(response, Matchers.not(Matchers.containsString("Connection: close")));
         assertThat(response, Matchers.containsString("Hello World"));
 
-        response=_connector.getResponses(
+        response=_connector.getResponse(
                     "GET / HTTP/1.1\n"+
                     "Host: whatever\n"+
                     "Connection: close\n"+
@@ -977,7 +1037,7 @@ public class RequestTest
         assertThat(response, Matchers.containsString("Connection: close"));
         assertThat(response, Matchers.containsString("Hello World"));
 
-        response=_connector.getResponses(
+        response=_connector.getResponse(
                     "GET / HTTP/1.1\n"+
                     "Host: whatever\n"+
                     "Connection: Other, close\n"+
@@ -988,7 +1048,7 @@ public class RequestTest
         assertThat(response, Matchers.containsString("Connection: close"));
         assertThat(response, Matchers.containsString("Hello World"));
 
-        response=_connector.getResponses(
+        response=_connector.getResponse(
                     "GET / HTTP/1.0\n"+
                     "Host: whatever\n"+
                     "\n"
@@ -997,7 +1057,7 @@ public class RequestTest
         assertThat(response, Matchers.not(Matchers.containsString("Connection: close")));
         assertThat(response, Matchers.containsString("Hello World"));
 
-        response=_connector.getResponses(
+        response=_connector.getResponse(
                     "GET / HTTP/1.0\n"+
                     "Host: whatever\n"+
                     "Connection: Other, close\n"+
@@ -1006,7 +1066,7 @@ public class RequestTest
         assertThat(response, Matchers.containsString("200"));
         assertThat(response, Matchers.containsString("Hello World"));
 
-        response=_connector.getResponses(
+        response=_connector.getResponse(
                     "GET / HTTP/1.0\n"+
                     "Host: whatever\n"+
                     "Connection: Other,,keep-alive\n"+
@@ -1029,7 +1089,7 @@ public class RequestTest
             }
         };
 
-        response=_connector.getResponses(
+        response=_connector.getResponse(
                     "GET / HTTP/1.1\n"+
                     "Host: whatever\n"+
                     "\n",
@@ -1039,7 +1099,7 @@ public class RequestTest
         assertThat(response, Matchers.containsString("Connection: TE,Other"));
         assertThat(response, Matchers.containsString("Hello World"));
 
-        response=_connector.getResponses(
+        response=_connector.getResponse(
                     "GET / HTTP/1.1\n"+
                     "Host: whatever\n"+
                     "Connection: close\n"+
@@ -1071,7 +1131,7 @@ public class RequestTest
         String response;
 
         cookies.clear();
-        response=_connector.getResponses(
+        response=_connector.getResponse(
                     "GET / HTTP/1.1\n"+
                     "Host: whatever\n"+
                     "Connection: close\n"+
@@ -1082,20 +1142,20 @@ public class RequestTest
 
 
         cookies.clear();
-        response=_connector.getResponses(
+        response=_connector.getResponse(
                     "GET / HTTP/1.1\n"+
                     "Host: whatever\n"+
-                    "Cookie: name=quoted=\\\"value\\\"\n" +
+                    "Cookie: name=quoted=\"\\\"value\\\"\"\n" +
                     "Connection: close\n"+
                     "\n"
         );
         assertTrue(response.startsWith("HTTP/1.1 200 OK"));
         assertEquals(1,cookies.size());
         assertEquals("name", cookies.get(0).getName());
-        assertEquals("quoted=\\\"value\\\"", cookies.get(0).getValue());
+        assertEquals("quoted=\"value\"", cookies.get(0).getValue());
 
         cookies.clear();
-        response=_connector.getResponses(
+        response=_connector.getResponse(
                 "GET / HTTP/1.1\n"+
                 "Host: whatever\n"+
                 "Cookie: name=value; other=\"quoted=;value\"\n" +
@@ -1110,7 +1170,7 @@ public class RequestTest
         assertEquals("quoted=;value", cookies.get(1).getValue());
 
         cookies.clear();
-        response=_connector.getResponses(
+        LocalEndPoint endp = _connector.executeRequest(
                 "GET /other HTTP/1.1\n"+
                 "Host: whatever\n"+
                 "Other: header\n"+
@@ -1123,8 +1183,11 @@ public class RequestTest
                 "Connection: close\n"+
                 "\n"
         );
+        response = endp.getResponse();
         assertThat(response, Matchers.startsWith("HTTP/1.1 200 OK"));
-        assertThat(response.substring(15), Matchers.containsString("HTTP/1.1 200 OK"));
+        response = endp.getResponse();
+        assertThat(response, Matchers.startsWith("HTTP/1.1 200 OK"));
+        
         assertEquals(4,cookies.size());
         assertEquals("name", cookies.get(0).getName());
         assertEquals("value", cookies.get(0).getValue());
@@ -1135,7 +1198,7 @@ public class RequestTest
         assertSame(cookies.get(1), cookies.get(3));
 
         cookies.clear();
-        response=_connector.getResponses(
+        endp = _connector.executeRequest(
                 "GET /other HTTP/1.1\n"+
                 "Host: whatever\n"+
                 "Other: header\n"+
@@ -1148,8 +1211,10 @@ public class RequestTest
                 "Connection: close\n"+
                 "\n"
         );
+        response = endp.getResponse();
         assertThat(response, Matchers.startsWith("HTTP/1.1 200 OK"));
-        assertThat(response.substring(15), Matchers.containsString("HTTP/1.1 200 OK"));
+        response = endp.getResponse();
+        assertThat(response, Matchers.startsWith("HTTP/1.1 200 OK"));
         assertEquals(4,cookies.size());
         assertEquals("name", cookies.get(0).getName());
         assertEquals("value", cookies.get(0).getValue());
@@ -1160,9 +1225,9 @@ public class RequestTest
         assertNotSame(cookies.get(1), cookies.get(3));
 
         cookies.clear();
-//NOTE: the javax.servlet.http.Cookie class sets the system property org.glassfish.web.rfc2109_cookie_names_enforced
-//to TRUE by default, and rejects all cookie names containing punctuation.Therefore this test cannot use "name2".
-        response=_connector.getResponses(
+        //NOTE: the javax.servlet.http.Cookie class sets the system property org.glassfish.web.rfc2109_cookie_names_enforced
+        //to TRUE by default, and rejects all cookie names containing punctuation.Therefore this test cannot use "name2".
+        response=_connector.getResponse(
                 "POST / HTTP/1.1\r\n"+
                 "Host: whatever\r\n"+
                 "Cookie: name0=value0; name1 = value1 ; \"name2\"  =  \"\\\"value2\\\"\"  \n" +
@@ -1193,7 +1258,7 @@ public class RequestTest
         assertEquals("value7", cookies.get(7).getValue());
 
         cookies.clear();
-        response=_connector.getResponses(
+        response=_connector.getResponse(
                 "GET /other HTTP/1.1\n"+
                         "Host: whatever\n"+
                         "Other: header\n"+
@@ -1242,7 +1307,7 @@ public class RequestTest
         "Connection: close\r\n"+
         "\r\n";
 
-        _connector.getResponses(request);
+        _connector.getResponse(request);
 
         assertEquals("value",cookie[0]);
         assertEquals(null,cookie[1]);
@@ -1258,7 +1323,7 @@ public class RequestTest
         "Connection: close\r\n"+
         "\r\n";
 
-        _connector.getResponses(request);
+        _connector.getResponse(request);
         assertEquals(null,cookie[0]);
         assertEquals(null,cookie[1]);
 
@@ -1275,7 +1340,7 @@ public class RequestTest
         "Connection: close\r\n"+
         "\r\n";
 
-        _connector.getResponses(request);
+        _connector.getResponse(request);
 
         assertEquals("value",cookie[0]);
         assertEquals(null,cookie[1]);
@@ -1285,110 +1350,100 @@ public class RequestTest
     @Test
     public void testHashDOSKeys() throws Exception
     {
-        ((StdErrLog)Log.getLogger(HttpChannel.class)).setHideStacks(true);
-        LOG.info("Expecting maxFormKeys limit and Closing HttpParser exceptions...");
-        _server.setAttribute("org.eclipse.jetty.server.Request.maxFormContentSize",-1);
-        _server.setAttribute("org.eclipse.jetty.server.Request.maxFormKeys",1000);
-
-
-        StringBuilder buf = new StringBuilder(4000000);
-        buf.append("a=b");
-
-        // The evil keys file is not distributed - as it is dangerous
-        File evil_keys = new File("/tmp/keys_mapping_to_zero_2m");
-        if (evil_keys.exists())
+        try (StacklessLogging stackless = new StacklessLogging(HttpChannel.class))
         {
-            LOG.info("Using real evil keys!");
-            try (BufferedReader in = new BufferedReader(new FileReader(evil_keys)))
+            LOG.info("Expecting maxFormKeys limit and Closing HttpParser exceptions...");
+            _server.setAttribute("org.eclipse.jetty.server.Request.maxFormContentSize",-1);
+            _server.setAttribute("org.eclipse.jetty.server.Request.maxFormKeys",1000);
+
+
+            StringBuilder buf = new StringBuilder(4000000);
+            buf.append("a=b");
+
+            // The evil keys file is not distributed - as it is dangerous
+            File evil_keys = new File("/tmp/keys_mapping_to_zero_2m");
+            if (evil_keys.exists())
             {
-                String key=null;
-                while((key=in.readLine())!=null)
-                    buf.append("&").append(key).append("=").append("x");
+                LOG.info("Using real evil keys!");
+                try (BufferedReader in = new BufferedReader(new FileReader(evil_keys)))
+                {
+                    String key=null;
+                    while((key=in.readLine())!=null)
+                        buf.append("&").append(key).append("=").append("x");
+                }
             }
-        }
-        else
-        {
-            // we will just create a lot of keys and make sure the limit is applied
-            for (int i=0;i<2000;i++)
-                buf.append("&").append("K").append(i).append("=").append("x");
-        }
-        buf.append("&c=d");
-
-
-        _handler._checker = new RequestTester()
-        {
-            @Override
-            public boolean check(HttpServletRequest request,HttpServletResponse response)
+            else
             {
-                return "b".equals(request.getParameter("a")) && request.getParameter("c")==null;
+                // we will just create a lot of keys and make sure the limit is applied
+                for (int i=0;i<2000;i++)
+                    buf.append("&").append("K").append(i).append("=").append("x");
             }
-        };
+            buf.append("&c=d");
 
-        String request="POST / HTTP/1.1\r\n"+
-        "Host: whatever\r\n"+
-        "Content-Type: "+MimeTypes.Type.FORM_ENCODED.asString()+"\r\n"+
-        "Content-Length: "+buf.length()+"\r\n"+
-        "Connection: close\r\n"+
-        "\r\n"+
-        buf;
 
-        try
-        {
+            _handler._checker = new RequestTester()
+            {
+                @Override
+                public boolean check(HttpServletRequest request,HttpServletResponse response)
+                {
+                    return "b".equals(request.getParameter("a")) && request.getParameter("c")==null;
+                }
+            };
+
+            String request="POST / HTTP/1.1\r\n"+
+                    "Host: whatever\r\n"+
+                    "Content-Type: "+MimeTypes.Type.FORM_ENCODED.asString()+"\r\n"+
+                    "Content-Length: "+buf.length()+"\r\n"+
+                    "Connection: close\r\n"+
+                    "\r\n"+
+                    buf;
+
             long start=System.currentTimeMillis();
-            String response = _connector.getResponses(request);
+            String response = _connector.getResponse(request);
             assertThat(response,Matchers.containsString("IllegalStateException"));
             long now=System.currentTimeMillis();
             assertTrue((now-start)<5000);
         }
-        finally
-        {
-            ((StdErrLog)Log.getLogger(HttpChannel.class)).setHideStacks(false);
-        }
     }
-    
+
     @Test
     public void testHashDOSSize() throws Exception
-    {
-        ((StdErrLog)Log.getLogger(HttpChannel.class)).setHideStacks(true);
-        LOG.info("Expecting maxFormSize limit and too much data exceptions...");
-        _server.setAttribute("org.eclipse.jetty.server.Request.maxFormContentSize",3396);
-        _server.setAttribute("org.eclipse.jetty.server.Request.maxFormKeys",1000);
-
-        StringBuilder buf = new StringBuilder(4000000);
-        buf.append("a=b");
-        // we will just create a lot of keys and make sure the limit is applied
-        for (int i=0;i<500;i++)
-            buf.append("&").append("K").append(i).append("=").append("x");
-        buf.append("&c=d");
-
-        _handler._checker = new RequestTester()
+    {        
+        try (StacklessLogging stackless = new StacklessLogging(HttpChannel.class))
         {
-            @Override
-            public boolean check(HttpServletRequest request,HttpServletResponse response)
+            LOG.info("Expecting maxFormSize limit and too much data exceptions...");
+            _server.setAttribute("org.eclipse.jetty.server.Request.maxFormContentSize",3396);
+            _server.setAttribute("org.eclipse.jetty.server.Request.maxFormKeys",1000);
+
+            StringBuilder buf = new StringBuilder(4000000);
+            buf.append("a=b");
+            // we will just create a lot of keys and make sure the limit is applied
+            for (int i=0;i<500;i++)
+                buf.append("&").append("K").append(i).append("=").append("x");
+            buf.append("&c=d");
+
+            _handler._checker = new RequestTester()
             {
-                return "b".equals(request.getParameter("a")) && request.getParameter("c")==null;
-            }
-        };
+                @Override
+                public boolean check(HttpServletRequest request,HttpServletResponse response)
+                {
+                    return "b".equals(request.getParameter("a")) && request.getParameter("c")==null;
+                }
+            };
 
-        String request="POST / HTTP/1.1\r\n"+
-        "Host: whatever\r\n"+
-        "Content-Type: "+MimeTypes.Type.FORM_ENCODED.asString()+"\r\n"+
-        "Content-Length: "+buf.length()+"\r\n"+
-        "Connection: close\r\n"+
-        "\r\n"+
-        buf;
+            String request="POST / HTTP/1.1\r\n"+
+                    "Host: whatever\r\n"+
+                    "Content-Type: "+MimeTypes.Type.FORM_ENCODED.asString()+"\r\n"+
+                    "Content-Length: "+buf.length()+"\r\n"+
+                    "Connection: close\r\n"+
+                    "\r\n"+
+                    buf;
 
-        try
-        {
             long start=System.currentTimeMillis();
-            String response = _connector.getResponses(request);
+            String response = _connector.getResponse(request);
             assertTrue(response.contains("IllegalStateException"));
             long now=System.currentTimeMillis();
             assertTrue((now-start)<5000);
-        }
-        finally
-        {
-            ((StdErrLog)Log.getLogger(HttpChannel.class)).setHideStacks(false);
         }
     }
 
@@ -1398,6 +1453,40 @@ public class RequestTest
         Request request = new Request(null, null);
         request.setCharacterEncoding("doesNotExist");
     }
+
+    @Test
+    public void testGetterSafeFromNullPointerException()
+    {
+        Request request = new Request(null, null);
+
+        assertNull(request.getAuthType());
+        assertNull(request.getAuthentication());
+
+        assertNull(request.getContentType());
+
+        assertNull(request.getCookies());
+        assertNull(request.getContext());
+        assertNull(request.getContextPath());
+
+        assertNull(request.getHttpFields());
+        assertNull(request.getHttpURI());
+
+        assertNotNull(request.getScheme());
+        assertNotNull(request.getServerName());
+        assertNotNull(request.getServerPort());
+
+        assertNotNull(request.getAttributeNames());
+        assertFalse(request.getAttributeNames().hasMoreElements());
+
+        request.getParameterMap();
+        assertNull(request.getQueryString());
+        assertNotNull(request.getQueryParameters());
+        assertEquals(0,request.getQueryParameters().size());
+        assertNotNull(request.getParameterMap());
+        assertEquals(0,request.getParameterMap().size());
+    }
+
+
 
     interface RequestTester
     {
@@ -1411,7 +1500,7 @@ public class RequestTest
         private String _content;
 
         @Override
-        public void handle(String target, Request baseRequest, HttpServletRequest request, HttpServletResponse response) throws IOException, ServletException
+        public void doHandle(String target, Request baseRequest, HttpServletRequest request, HttpServletResponse response) throws IOException, ServletException
         {
             ((Request)request).setHandled(true);
 
@@ -1467,7 +1556,7 @@ public class RequestTest
             }
         }
     }
-    
+
     private class BadMultiPartRequestHandler extends AbstractHandler
     {
         File tmpDir;
@@ -1489,16 +1578,13 @@ public class RequestTest
                 request.setAttribute(Request.__MULTIPART_CONFIG_ELEMENT, mpce);
 
                 //We should get an error when we getParams if there was a problem parsing the multipart
-                request.getParameter("xxx");
+                request.getPart("xxx");
                 //A 200 response is actually wrong here
             }
             catch (RuntimeException e)
             {
                 response.sendError(500);
             }
-           
         }
     }
-    
-    
 }

@@ -42,6 +42,7 @@ import javax.servlet.ServletException;
 import javax.servlet.http.Part;
 
 import org.eclipse.jetty.util.MultiPartInputStreamParser.MultiPart;
+import org.hamcrest.Matchers;
 import org.junit.Test;
 
 /**
@@ -354,6 +355,42 @@ public class MultiPartInputStreamTest
             assertTrue(e.getMessage().startsWith("Request exceeds maxRequestSize"));
         }
     }
+    
+    
+    @Test
+    public void testRequestTooBigThrowsErrorOnGetParts ()
+    throws Exception
+    {
+        MultipartConfigElement config = new MultipartConfigElement(_dirname, 60, 100, 50);
+        MultiPartInputStreamParser mpis = new MultiPartInputStreamParser(new ByteArrayInputStream(_multi.getBytes()),
+                                                            _contentType,
+                                                             config,
+                                                             _tmpDir);
+        mpis.setDeleteOnExit(true);
+        Collection<Part> parts = null;
+        
+        //cause parsing
+        try
+        {
+            parts = mpis.getParts();
+            fail("Request should have exceeded maxRequestSize");
+        }
+        catch (IllegalStateException e)
+        {
+            assertTrue(e.getMessage().startsWith("Request exceeds maxRequestSize"));
+        }
+        
+        //try again
+        try
+        {
+            parts = mpis.getParts();
+            fail("Request should have exceeded maxRequestSize");
+        }
+        catch (IllegalStateException e)
+        {
+            assertTrue(e.getMessage().startsWith("Request exceeds maxRequestSize"));
+        }
+    }
 
     @Test
     public void testFileTooBig()
@@ -376,6 +413,41 @@ public class MultiPartInputStreamTest
             assertTrue(e.getMessage().startsWith("Multipart Mime part"));
         }
     }
+    
+    @Test
+    public void testFileTooBigThrowsErrorOnGetParts()
+    throws Exception
+    {
+        MultipartConfigElement config = new MultipartConfigElement(_dirname, 40, 1024, 30);
+        MultiPartInputStreamParser mpis = new MultiPartInputStreamParser(new ByteArrayInputStream(_multi.getBytes()),
+                                                            _contentType,
+                                                             config,
+                                                             _tmpDir);
+        mpis.setDeleteOnExit(true);
+        Collection<Part> parts = null;
+        try
+        {
+            parts = mpis.getParts(); //caused parsing
+            fail("stuff.txt should have been larger than maxFileSize");
+        }
+        catch (IllegalStateException e)
+        {
+            assertTrue(e.getMessage().startsWith("Multipart Mime part"));
+        }
+        
+        //test again after the parsing
+        try
+        {
+            parts = mpis.getParts(); //caused parsing
+            fail("stuff.txt should have been larger than maxFileSize");
+        }
+        catch (IllegalStateException e)
+        {
+            assertTrue(e.getMessage().startsWith("Multipart Mime part"));
+        }
+    }
+    
+    
 
     @Test
     public void testPartFileNotDeleted () throws Exception
@@ -557,7 +629,7 @@ public class MultiPartInputStreamTest
 
     }
     
-    
+    @Test
     public void testCharsetEncoding () throws Exception
     {
         String contentType = "multipart/form-data; boundary=TheBoundary; charset=ISO-8859-1";

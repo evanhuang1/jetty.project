@@ -184,7 +184,9 @@ public abstract class HttpReceiver
                     case SET_COOKIE:
                     case SET_COOKIE2:
                     {
-                        storeCookie(exchange.getRequest().getURI(), field);
+                        URI uri = exchange.getRequest().getURI();
+                        if (uri != null)
+                            storeCookie(uri, field);
                         break;
                     }
                     default:
@@ -305,6 +307,7 @@ public abstract class HttpReceiver
                 }
                 default:
                 {
+                    callback.failed(new IllegalStateException("Invalid response state " + current));
                     return false;
                 }
             }
@@ -444,6 +447,7 @@ public abstract class HttpReceiver
 
         if (result != null)
         {
+            result = channel.exchangeTerminating(exchange, result);
             boolean ordered = getHttpDestination().getHttpClient().isStrictEventOrdering();
             if (!ordered)
                 channel.exchangeTerminated(exchange, result);

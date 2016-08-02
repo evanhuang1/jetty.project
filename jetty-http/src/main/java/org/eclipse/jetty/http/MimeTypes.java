@@ -18,20 +18,24 @@
 
 package org.eclipse.jetty.http;
 
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.InputStreamReader;
+import java.net.URL;
 import java.nio.ByteBuffer;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
-import java.util.Enumeration;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Map.Entry;
-import java.util.MissingResourceException;
-import java.util.ResourceBundle;
+import java.util.Properties;
 import java.util.Set;
 
 import org.eclipse.jetty.util.ArrayTrie;
 import org.eclipse.jetty.util.BufferUtil;
+import org.eclipse.jetty.util.Loader;
 import org.eclipse.jetty.util.StringUtil;
 import org.eclipse.jetty.util.Trie;
 import org.eclipse.jetty.util.log.Log;
@@ -40,7 +44,7 @@ import org.eclipse.jetty.util.log.Logger;
 
 /* ------------------------------------------------------------ */
 /**
- * 
+ *
  */
 public class MimeTypes
 {
@@ -58,16 +62,16 @@ public class MimeTypes
 
         TEXT_HTML_8859_1("text/html;charset=iso-8859-1",TEXT_HTML),
         TEXT_HTML_UTF_8("text/html;charset=utf-8",TEXT_HTML),
-        
+
         TEXT_PLAIN_8859_1("text/plain;charset=iso-8859-1",TEXT_PLAIN),
         TEXT_PLAIN_UTF_8("text/plain;charset=utf-8",TEXT_PLAIN),
-        
+
         TEXT_XML_8859_1("text/xml;charset=iso-8859-1",TEXT_XML),
         TEXT_XML_UTF_8("text/xml;charset=utf-8",TEXT_XML),
-        
+
         TEXT_JSON_8859_1("text/json;charset=iso-8859-1",TEXT_JSON),
         TEXT_JSON_UTF_8("text/json;charset=utf-8",TEXT_JSON),
-        
+
         APPLICATION_JSON_8859_1("text/json;charset=iso-8859-1",APPLICATION_JSON),
         APPLICATION_JSON_UTF_8("text/json;charset=utf-8",APPLICATION_JSON);
 
@@ -91,7 +95,7 @@ public class MimeTypes
             _charsetString=null;
             _assumedCharset=false;
             _field=new PreEncodedHttpField(HttpHeader.CONTENT_TYPE,_string);
-        } 
+        }
 
         /* ------------------------------------------------------------ */
         Type(String s,Type base)
@@ -101,7 +105,7 @@ public class MimeTypes
             _base=base;
             int i=s.indexOf(";charset=");
             _charset=Charset.forName(s.substring(i+9));
-            _charsetString=_charset==null?null:_charset.toString().toLowerCase();
+            _charsetString=_charset.toString().toLowerCase(Locale.ENGLISH);
             _assumedCharset=false;
             _field=new PreEncodedHttpField(HttpHeader.CONTENT_TYPE,_string);
         }
@@ -113,7 +117,7 @@ public class MimeTypes
             _base=this;
             _buffer=BufferUtil.toBuffer(s);
             _charset=cs;
-            _charsetString=_charset==null?null:_charset.toString().toLowerCase();
+            _charsetString=_charset==null?null:_charset.toString().toLowerCase(Locale.ENGLISH);
             _assumedCharset=true;
             _field=new PreEncodedHttpField(HttpHeader.CONTENT_TYPE,_string);
         }
@@ -123,23 +127,23 @@ public class MimeTypes
         {
             return _buffer.asReadOnlyBuffer();
         }
-        
+
         /* ------------------------------------------------------------ */
         public Charset getCharset()
         {
             return _charset;
         }
-        
+
         /* ------------------------------------------------------------ */
         public String getCharsetString()
         {
             return _charsetString;
         }
-        
+
         /* ------------------------------------------------------------ */
         public boolean is(String s)
         {
-            return _string.equalsIgnoreCase(s);    
+            return _string.equalsIgnoreCase(s);
         }
 
         /* ------------------------------------------------------------ */
@@ -147,7 +151,7 @@ public class MimeTypes
         {
             return _string;
         }
-        
+
         /* ------------------------------------------------------------ */
         @Override
         public String toString()
@@ -199,16 +203,36 @@ public class MimeTypes
 
         try
         {
-            ResourceBundle mime = ResourceBundle.getBundle("org/eclipse/jetty/http/mime");
-            Enumeration<String> i = mime.getKeys();
-            while(i.hasMoreElements())
+            String resourceName = "org/eclipse/jetty/http/mime.properties";
+            URL mimeTypesUrl = Loader.getResource(resourceName);
+            if (mimeTypesUrl == null)
             {
-                String ext = i.nextElement();
-                String m = mime.getString(ext);
-                __dftMimeMap.put(StringUtil.asciiToLowerCase(ext),normalizeMimeType(m));
+                LOG.warn("Missing mime-type resource: {}", resourceName);
+            }
+            else
+            {
+                try (InputStream in = mimeTypesUrl.openStream();
+                     InputStreamReader reader = new InputStreamReader(in, StandardCharsets.UTF_8))
+                {
+                    Properties mime = new Properties();
+                    mime.load(reader);
+                    mime.stringPropertyNames().stream()
+                    .filter(x->x!=null)
+                    .forEach(x->
+                    __dftMimeMap.put(StringUtil.asciiToLowerCase(x), normalizeMimeType(mime.getProperty(x))));
+                    
+                    if (__dftMimeMap.size()<mime.size())
+                    {
+                        LOG.warn("Encountered duplicate or null mime-type extension in resource: {}", mimeTypesUrl);
+                    }
+                }
+                if (__dftMimeMap.size()==0)
+                {
+                    LOG.warn("Empty mime types declaration at {}", mimeTypesUrl);
+                }
             }
         }
-        catch(MissingResourceException e)
+        catch(IOException e)
         {
             LOG.warn(e.toString());
             LOG.debug(e);
@@ -216,15 +240,37 @@ public class MimeTypes
 
         try
         {
-            ResourceBundle encoding = ResourceBundle.getBundle("org/eclipse/jetty/http/encoding");
-            Enumeration<String> i = encoding.getKeys();
-            while(i.hasMoreElements())
+            String resourceName = "org/eclipse/jetty/http/encoding.properties";
+            URL mimeTypesUrl = Loader.getResource(resourceName);
+            if (mimeTypesUrl == null)
             {
-                String type = i.nextElement();
-                __encodings.put(type,encoding.getString(type));
+                LOG.warn("Missing mime-type resource: {}", resourceName);
+            }
+            else
+            {
+                try (InputStream in = mimeTypesUrl.openStream();
+                     InputStreamReader reader = new InputStreamReader(in, StandardCharsets.UTF_8))
+                {
+                    Properties encoding = new Properties();
+                    encoding.load(reader);
+                    
+                    encoding.stringPropertyNames().stream()
+                    .filter(t->t!=null)
+                    .forEach(t->__encodings.put(t, encoding.getProperty(t)));
+
+                    if (__encodings.size()<encoding.size())
+                    {
+                        LOG.warn("Encountered null or duplicate encoding type in resource: {}", mimeTypesUrl);
+                    }
+                }
+
+                if (__encodings.size()==0)
+                {
+                    LOG.warn("Empty mime types declaration at {}", mimeTypesUrl);
+                }
             }
         }
-        catch(MissingResourceException e)
+        catch(IOException e)
         {
             LOG.warn(e.toString());
             LOG.debug(e);
@@ -261,7 +307,7 @@ public class MimeTypes
                 _mimeMap.put(StringUtil.asciiToLowerCase(ext.getKey()),normalizeMimeType(ext.getValue()));
         }
     }
-    
+
     /* ------------------------------------------------------------ */
     /** Get the MIME type by filename extension.
      * @param filename A file name
@@ -316,7 +362,7 @@ public class MimeTypes
     {
         return new HashSet<>(__dftMimeMap.values());
     }
-    
+
     /* ------------------------------------------------------------ */
     private static String normalizeMimeType(String type)
     {
@@ -401,7 +447,7 @@ public class MimeTypes
     {
         return __encodings.get(value);
     }
-    
+
     public static String getContentTypeWithoutCharset(String value)
     {
         int end=value.length();
@@ -424,7 +470,7 @@ public class MimeTypes
                 {
                     quote=true;
                 }
-                
+
                 switch(state)
                 {
                     case 11:
@@ -438,11 +484,11 @@ public class MimeTypes
                         break;
                     default:
                         start=i;
-                        state=0;           
+                        state=0;
                 }
                 continue;
             }
-            
+
             if (quote)
             {
                 if (builder!=null && state!=10)

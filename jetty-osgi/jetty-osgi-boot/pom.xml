@@ -2,7 +2,7 @@
   <parent>
     <groupId>org.eclipse.jetty.osgi</groupId>
     <artifactId>jetty-osgi-project</artifactId>
-    <version>9.3.8-SNAPSHOT</version>
+    <version>9.4.0-SNAPSHOT</version>
   </parent>
   <modelVersion>4.0.0</modelVersion>
   <artifactId>jetty-osgi-boot</artifactId>
@@ -30,8 +30,8 @@
       <artifactId>jetty-jmx</artifactId>
     </dependency>
     <dependency>
-    	<groupId>org.eclipse.osgi</groupId>
-    	<artifactId>org.eclipse.osgi</artifactId>
+      <groupId>org.eclipse.osgi</groupId>
+      <artifactId>org.eclipse.osgi</artifactId>
     </dependency>
     <dependency>
       <groupId>org.eclipse.osgi</groupId>
@@ -63,29 +63,6 @@
                 </executions>
             </plugin>
             <plugin>
-                <groupId>org.apache.maven.plugins</groupId>
-                <artifactId>maven-jar-plugin</artifactId>
-                <executions>
-                    <execution>
-                        <id>artifact-jar</id>
-                        <goals>
-                            <goal>jar</goal>
-                        </goals>
-                    </execution>
-                    <execution>
-                        <id>test-jar</id>
-                        <goals>
-                            <goal>test-jar</goal>
-                        </goals>
-                    </execution>
-                </executions>
-                <configuration>
-                    <archive>
-                        <manifestFile>target/classes/META-INF/MANIFEST.MF</manifestFile>
-                    </archive>
-                </configuration>
-            </plugin>
-            <plugin>
                 <groupId>org.apache.felix</groupId>
                 <artifactId>maven-bundle-plugin</artifactId>
                 <extensions>true</extensions>
@@ -115,6 +92,7 @@
  org.slf4j.helpers;resolution:=optional,
  org.xml.sax,
  org.xml.sax.helpers,
+ org.eclipse.jetty.annotations;resolution:=optional,
  *
                         </Import-Package>
                         <_nouses>true</_nouses>

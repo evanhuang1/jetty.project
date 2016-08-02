@@ -66,8 +66,8 @@ public class ClasspathPatternTest
     public void testExplicitNestedMatch()
     {
         assertTrue(pattern.match("org.example.Nested$Something"));
-        
         assertFalse(pattern.match("org.example.Nested$Minus"));
+        assertTrue(pattern.match("org.example.Nested$Other"));
     }
 
     @Test
@@ -105,5 +105,14 @@ public class ClasspathPatternTest
         assertTrue(pattern.match("org.example.Nested$Something$Else"));
         
         assertFalse(pattern.match("org.example.Nested$Minus$Else"));
+    }
+
+    @Test
+    public void testMatchAll()
+    {
+        pattern.clear();
+        pattern.add(".");
+        assertTrue(pattern.match("org.example.Anything"));
+        assertTrue(pattern.match("org.example.Anything$Else"));
     }
 }

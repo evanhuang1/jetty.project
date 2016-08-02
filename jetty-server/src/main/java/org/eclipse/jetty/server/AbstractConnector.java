@@ -136,7 +136,7 @@ import org.eclipse.jetty.util.thread.Scheduler;
 @ManagedObject("Abstract implementation of the Connector Interface")
 public abstract class AbstractConnector extends ContainerLifeCycle implements Connector, Dumpable
 {
-    protected final Logger LOG = Log.getLogger(getClass());
+    protected final Logger LOG = Log.getLogger(AbstractConnector.class);
     // Order is important on server side, so we use a LinkedHashMap
     private final Map<String, ConnectionFactory> _factories = new LinkedHashMap<>();
     private final Server _server;
@@ -151,7 +151,7 @@ public abstract class AbstractConnector extends ContainerLifeCycle implements Co
     private String _defaultProtocol;
     private ConnectionFactory _defaultConnectionFactory;
     private String _name;
-    private int _acceptorPriorityDelta;
+    private int _acceptorPriorityDelta=-2;
 
 
     /**
@@ -253,9 +253,11 @@ public abstract class AbstractConnector extends ContainerLifeCycle implements Co
     @Override
     protected void doStart() throws Exception
     {
+        if(_defaultProtocol==null)
+            throw new IllegalStateException("No default protocol for "+this);
         _defaultConnectionFactory = getConnectionFactory(_defaultProtocol);
         if(_defaultConnectionFactory==null)
-            throw new IllegalStateException("No protocol factory for default protocol: "+_defaultProtocol);
+            throw new IllegalStateException("No protocol factory for default protocol '"+_defaultProtocol+"' in "+this);
 
         super.doStart();
 
@@ -298,7 +300,7 @@ public abstract class AbstractConnector extends ContainerLifeCycle implements Co
         // If we have a stop timeout
         long stopTimeout = getStopTimeout();
         CountDownLatch stopping=_stopping;
-        if (stopTimeout > 0 && stopping!=null)
+        if (stopTimeout > 0 && stopping!=null && getAcceptors()>0)
             stopping.await(stopTimeout,TimeUnit.MILLISECONDS);
         _stopping=null;
 
@@ -528,6 +530,34 @@ public abstract class AbstractConnector extends ContainerLifeCycle implements Co
         return getConnectionFactory(_defaultProtocol);
     }
 
+    protected boolean handleAcceptFailure(Throwable previous, Throwable current)
+    {
+        if (isAccepting())
+        {
+            if (previous == null)
+                LOG.warn(current);
+            else
+                LOG.debug(current);
+            try
+            {
+                // Arbitrary sleep to avoid spin looping.
+                // Subclasses may decide for a different
+                // sleep policy or closing the connector.
+                Thread.sleep(1000);
+                return true;
+            }
+            catch (Throwable x)
+            {
+                return false;
+            }
+        }
+        else
+        {
+            LOG.ignore(current);
+            return false;
+        }
+    }
+
     private class Acceptor implements Runnable
     {
         private final int _id;
@@ -557,18 +587,20 @@ public abstract class AbstractConnector extends ContainerLifeCycle implements Co
 
             try
             {
+                Throwable exception = null;
                 while (isAccepting())
                 {
                     try
                     {
                         accept(_id);
+                        exception = null;
                     }
-                    catch (Throwable e)
+                    catch (Throwable x)
                     {
-                        if (isAccepting())
-                            LOG.warn(e);
+                        if (handleAcceptFailure(exception, x))
+                            exception = x;
                         else
-                            LOG.ignore(e);
+                            break;
                     }
                 }
             }

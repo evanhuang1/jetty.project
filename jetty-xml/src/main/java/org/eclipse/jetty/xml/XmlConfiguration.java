@@ -47,7 +47,6 @@ import java.util.ServiceLoader;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicReference;
 
-import org.eclipse.jetty.util.ArrayQueue;
 import org.eclipse.jetty.util.LazyList;
 import org.eclipse.jetty.util.Loader;
 import org.eclipse.jetty.util.StringUtil;
@@ -84,16 +83,16 @@ public class XmlConfiguration
     private static final Class<?>[] __boxedPrimitives =
             {Boolean.class, Character.class, Byte.class, Short.class, Integer.class, Long.class, Float.class, Double.class, Void.class};
     private static final Class<?>[] __supportedCollections =
-            {ArrayList.class, ArrayQueue.class, HashSet.class, Queue.class, List.class, Set.class, Collection.class};
+            {ArrayList.class, HashSet.class, Queue.class, List.class, Set.class, Collection.class};
     private static final Iterable<ConfigurationProcessorFactory> __factoryLoader = ServiceLoader.load(ConfigurationProcessorFactory.class);
     private static final XmlParser __parser = initParser();
     private static XmlParser initParser()
     {
         XmlParser parser = new XmlParser();
-        URL config60 = Loader.getResource(XmlConfiguration.class, "org/eclipse/jetty/xml/configure_6_0.dtd");
-        URL config76 = Loader.getResource(XmlConfiguration.class,"org/eclipse/jetty/xml/configure_7_6.dtd");
-        URL config90 = Loader.getResource(XmlConfiguration.class,"org/eclipse/jetty/xml/configure_9_0.dtd");
-        URL config93 = Loader.getResource(XmlConfiguration.class,"org/eclipse/jetty/xml/configure_9_3.dtd");
+        URL config60 = Loader.getResource("org/eclipse/jetty/xml/configure_6_0.dtd");
+        URL config76 = Loader.getResource("org/eclipse/jetty/xml/configure_7_6.dtd");
+        URL config90 = Loader.getResource("org/eclipse/jetty/xml/configure_9_0.dtd");
+        URL config93 = Loader.getResource("org/eclipse/jetty/xml/configure_9_3.dtd");
         parser.redirectEntity("configure.dtd",config90);
         parser.redirectEntity("configure_1_0.dtd",config60);
         parser.redirectEntity("configure_1_1.dtd",config60);
@@ -365,7 +364,7 @@ public class XmlConfiguration
             if (className == null)
                 return null;
 
-            return Loader.loadClass(XmlConfiguration.class,className);
+            return Loader.loadClass(className);
         }
 
         /**
@@ -605,12 +604,6 @@ public class XmlConfiguration
                     collection = convertArrayToArrayList(array);
                 else if (collectionType.isAssignableFrom(HashSet.class))
                     collection = new HashSet<>(convertArrayToArrayList(array));
-                else if (collectionType.isAssignableFrom(ArrayQueue.class))
-                {
-                    ArrayQueue<Object> q= new ArrayQueue<>();
-                    q.addAll(convertArrayToArrayList(array));
-                    collection=q;
-                }
             }
             if (collection==null)
                 throw new IllegalArgumentException("Can't convert \"" + array.getClass() + "\" to " + collectionType);
@@ -647,7 +640,7 @@ public class XmlConfiguration
 
         /*
          * Call a get method. Any object returned from the call is passed to the configure method to consume the remaining elements. @param obj @param node
-         *
+         * If class attribute is given and the name is "class", then the class instance itself is returned.
          * @return @exception Exception
          */
         private Object get(Object obj, XmlParser.Node node) throws Exception
@@ -665,9 +658,15 @@ public class XmlConfiguration
 
             try
             {
-                // try calling a getXxx method.
-                Method method = oClass.getMethod("get" + name.substring(0,1).toUpperCase(Locale.ENGLISH) + name.substring(1),(java.lang.Class[])null);
-                obj = method.invoke(obj,(java.lang.Object[])null);
+                // Handle getClass explicitly
+                if ("class".equalsIgnoreCase(name))
+                    obj=oClass;
+                else
+                {
+                    // try calling a getXxx method.
+                    Method method = oClass.getMethod("get" + name.substring(0,1).toUpperCase(Locale.ENGLISH) + name.substring(1),(java.lang.Class[])null);
+                    obj = method.invoke(obj,(java.lang.Object[])null);
+                }
                 if (id!=null)
                     _configuration.getIdMap().put(id,obj);
                 configure(obj,node,0);
@@ -708,7 +707,7 @@ public class XmlConfiguration
             if (clazz!=null)
             {
                 // static call
-                oClass=Loader.loadClass(XmlConfiguration.class,clazz);
+                oClass=Loader.loadClass(clazz);
                 obj=null;
             }
             else if (obj!=null)
@@ -755,7 +754,7 @@ public class XmlConfiguration
             if (LOG.isDebugEnabled())
                 LOG.debug("XML new " + clazz);
             
-            Class<?> oClass = Loader.loadClass(XmlConfiguration.class,clazz);
+            Class<?> oClass = Loader.loadClass(clazz);
             
             // Find the <Arg> elements
             Map<String, Object> namedArgMap = new HashMap<>();
@@ -846,7 +845,7 @@ public class XmlConfiguration
                             aClass = InetAddress.class;
                             break;
                         default:
-                            aClass = Loader.loadClass(XmlConfiguration.class, type);
+                            aClass = Loader.loadClass(type);
                             break;
                     }
                 }

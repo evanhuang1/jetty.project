@@ -28,7 +28,9 @@ import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.Executor;
+import java.util.function.Consumer;
 
 import javax.servlet.ServletContext;
 import javax.servlet.ServletException;
@@ -86,6 +88,7 @@ public class WebSocketServerFactory extends ContainerLifeCycle implements WebSoc
      * Have the factory maintain 1 and only 1 scheduler. All connections share this scheduler.
      */
     private final Scheduler scheduler = new ScheduledExecutorScheduler();
+    private final List<WebSocketSession.Listener> listeners = new CopyOnWriteArrayList<>();
     private final String supportedVersions;
     private final WebSocketPolicy defaultPolicy;
     private final ByteBufferPool bufferPool;
@@ -117,7 +120,7 @@ public class WebSocketServerFactory extends ContainerLifeCycle implements WebSoc
 
         addBean(scheduler);
         addBean(bufferPool);
-        
+
         this.contextClassloader = Thread.currentThread().getContextClassLoader();
 
         this.registeredSocketClasses = new ArrayList<>();
@@ -125,7 +128,7 @@ public class WebSocketServerFactory extends ContainerLifeCycle implements WebSoc
         this.defaultPolicy = policy;
         this.bufferPool = bufferPool;
         this.extensionFactory = new WebSocketExtensionFactory(this);
-        
+
         this.sessionFactories = new ArrayList<>();
         this.sessionFactories.add(new WebSocketSessionFactory(this));
         this.creator = this;
@@ -149,6 +152,16 @@ public class WebSocketServerFactory extends ContainerLifeCycle implements WebSoc
         supportedVersions = rv.toString();
     }
 
+    public void addSessionListener(WebSocketSession.Listener listener)
+    {
+        listeners.add(listener);
+    }
+
+    public void removeSessionListener(WebSocketSession.Listener listener)
+    {
+        listeners.remove(listener);
+    }
+
     @Override
     public boolean acceptWebSocket(HttpServletRequest request, HttpServletResponse response) throws IOException
     {
@@ -162,7 +175,7 @@ public class WebSocketServerFactory extends ContainerLifeCycle implements WebSoc
         try
         {
             Thread.currentThread().setContextClassLoader(contextClassloader);
-            
+
             // Create Servlet Specific Upgrade Request/Response objects
             ServletUpgradeRequest sockreq = new ServletUpgradeRequest(request);
             ServletUpgradeResponse sockresp = new ServletUpgradeResponse(response);
@@ -184,23 +197,23 @@ public class WebSocketServerFactory extends ContainerLifeCycle implements WebSoc
 
             // Allow Decorators to do their thing
             websocketPojo = getObjectFactory().decorate(websocketPojo);
-            
+
             // Get the original HTTPConnection
             HttpConnection connection = (HttpConnection)request.getAttribute("org.eclipse.jetty.server.HttpConnection");
-            
+
             // Send the upgrade
             return upgrade(connection, sockreq, sockresp, websocketPojo);
         }
         catch (URISyntaxException e)
         {
             throw new IOException("Unable to accept websocket due to mangled URI", e);
-        } 
+        }
         finally
         {
             Thread.currentThread().setContextClassLoader(old);
         }
     }
-    
+
     public void addSessionFactory(SessionFactory sessionFactory)
     {
         if (sessionFactories.contains(sessionFactory))
@@ -280,7 +293,7 @@ public class WebSocketServerFactory extends ContainerLifeCycle implements WebSoc
             throw new WebSocketException("Unable to create instance of " + firstClass, e);
         }
     }
-    
+
     @Override
     protected void doStart() throws Exception
     {
@@ -288,7 +301,7 @@ public class WebSocketServerFactory extends ContainerLifeCycle implements WebSoc
         {
             this.objectFactory = new DecoratedObjectFactory();
         }
-        
+
         super.doStart();
     }
 
@@ -303,7 +316,7 @@ public class WebSocketServerFactory extends ContainerLifeCycle implements WebSoc
     {
         return this.creator;
     }
-    
+
     @Override
     public Executor getExecutor()
     {
@@ -320,7 +333,7 @@ public class WebSocketServerFactory extends ContainerLifeCycle implements WebSoc
     {
         return extensionFactory;
     }
-    
+
     public Collection<WebSocketSession> getOpenSessions()
     {
         return getBeans(WebSocketSession.class);
@@ -331,12 +344,12 @@ public class WebSocketServerFactory extends ContainerLifeCycle implements WebSoc
     {
         return defaultPolicy;
     }
-    
+
     @Override
     public SslContextFactory getSslContextFactory()
     {
         /* Not relevant for a Server, as this is defined in the
-         * Connector configuration 
+         * Connector configuration
          */
         return null;
     }
@@ -348,10 +361,10 @@ public class WebSocketServerFactory extends ContainerLifeCycle implements WebSoc
         {
             this.objectFactory = new DecoratedObjectFactory();
         }
-        
+
         this.executor = context.getServer().getThreadPool();
     }
-    
+
     @Override
     public void init(ServletContext context) throws ServletException
     {
@@ -361,7 +374,7 @@ public class WebSocketServerFactory extends ContainerLifeCycle implements WebSoc
         {
             this.objectFactory = new DecoratedObjectFactory();
         }
-        
+
         // Validate Environment
         ContextHandler handler = ContextHandler.getContextHandler(context);
 
@@ -371,7 +384,7 @@ public class WebSocketServerFactory extends ContainerLifeCycle implements WebSoc
         }
 
         this.executor = handler.getServer().getThreadPool();
-        
+
         try
         {
             // start lifecycle
@@ -444,32 +457,32 @@ public class WebSocketServerFactory extends ContainerLifeCycle implements WebSoc
     }
 
     @Override
-    public void onSessionClosed(WebSocketSession session)
-    {
-        removeBean(session);
-    }
-
-    @Override
     public void onSessionOpened(WebSocketSession session)
     {
         addManaged(session);
+        notifySessionListeners(listener -> listener.onOpened(session));
     }
 
-    protected String[] parseProtocols(String protocol)
+    @Override
+    public void onSessionClosed(WebSocketSession session)
     {
-        if (protocol == null)
+        removeBean(session);
+        notifySessionListeners(listener -> listener.onClosed(session));
+    }
+
+    private void notifySessionListeners(Consumer<WebSocketSession.Listener> consumer)
+    {
+        for (WebSocketSession.Listener listener : listeners)
         {
-            return new String[]{null};
+            try
+            {
+                consumer.accept(listener);
+            }
+            catch (Throwable x)
+            {
+                LOG.info("Exception while invoking listener " + listener, x);
+            }
         }
-        protocol = protocol.trim();
-        if (protocol.length() == 0)
-        {
-            return new String[]{null};
-        }
-        String[] passed = protocol.split("\\s*,\\s*");
-        String[] protocols = new String[passed.length + 1];
-        System.arraycopy(passed, 0, protocols, 0, passed.length);
-        return protocols;
     }
 
     @Override
@@ -583,7 +596,7 @@ public class WebSocketServerFactory extends ContainerLifeCycle implements WebSoc
         // Setup Session
         WebSocketSession session = createSession(request.getRequestURI(), websocket, wsConnection);
         session.setUpgradeRequest(request);
-        // set true negotiated extension list back to response 
+        // set true negotiated extension list back to response
         response.setExtensions(extensionStack.getNegotiatedExtensions());
         session.setUpgradeResponse(response);
         wsConnection.addListener(session);
@@ -599,7 +612,7 @@ public class WebSocketServerFactory extends ContainerLifeCycle implements WebSoc
         // Start Components
         session.addManaged(extensionStack);
         this.addManaged(session);
-        
+
         if (session.isFailed())
         {
             throw new IOException("Session failed to start");
@@ -613,7 +626,7 @@ public class WebSocketServerFactory extends ContainerLifeCycle implements WebSoc
 
         if (getSendServerVersion(connector))
             response.setHeader("Server",HttpConfiguration.SERVER_VERSION);
-        
+
         // Process (version specific) handshake response
         handshaker.doHandshakeResponse(request, response);
 

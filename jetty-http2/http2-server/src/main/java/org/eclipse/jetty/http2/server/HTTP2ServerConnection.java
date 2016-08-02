@@ -18,6 +18,7 @@
 
 package org.eclipse.jetty.http2.server;
 
+import java.io.Closeable;
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.List;
@@ -30,6 +31,7 @@ import org.eclipse.jetty.http.HttpHeader;
 import org.eclipse.jetty.http.HttpMethod;
 import org.eclipse.jetty.http.MetaData;
 import org.eclipse.jetty.http.MetaData.Request;
+import org.eclipse.jetty.http2.ErrorCode;
 import org.eclipse.jetty.http2.HTTP2Connection;
 import org.eclipse.jetty.http2.ISession;
 import org.eclipse.jetty.http2.IStream;
@@ -38,6 +40,7 @@ import org.eclipse.jetty.http2.frames.DataFrame;
 import org.eclipse.jetty.http2.frames.Frame;
 import org.eclipse.jetty.http2.frames.HeadersFrame;
 import org.eclipse.jetty.http2.frames.PrefaceFrame;
+import org.eclipse.jetty.http2.frames.ResetFrame;
 import org.eclipse.jetty.http2.frames.SettingsFrame;
 import org.eclipse.jetty.http2.parser.ServerParser;
 import org.eclipse.jetty.http2.parser.SettingsBodyParser;
@@ -51,9 +54,35 @@ import org.eclipse.jetty.util.BufferUtil;
 import org.eclipse.jetty.util.Callback;
 import org.eclipse.jetty.util.ConcurrentArrayQueue;
 import org.eclipse.jetty.util.TypeUtil;
+import org.eclipse.jetty.util.thread.ExecutionStrategy;
 
 public class HTTP2ServerConnection extends HTTP2Connection implements Connection.UpgradeTo
 {
+    
+    /**
+     * @param protocol A HTTP2 protocol variant
+     * @return True if the protocol version is supported
+     */
+    public static boolean isSupportedProtocol(String protocol)
+    {
+        switch(protocol)
+        {
+            case "h2":
+            case "h2-17":
+            case "h2-16":
+            case "h2-15":
+            case "h2-14":
+            case "h2c":
+            case "h2c-17":
+            case "h2c-16":
+            case "h2c-15":
+            case "h2c-14":
+                return true;
+            default:
+                return false;
+        }
+    }
+    
     private final Queue<HttpChannelOverHTTP2> channels = new ConcurrentArrayQueue<>();
     private final ServerSessionListener listener;
     private final HttpConfiguration httpConfig;
@@ -181,12 +210,12 @@ public class HTTP2ServerConnection extends HTTP2Connection implements Connection
             upgradeFrames.add(new PrefaceFrame());
             upgradeFrames.add(settingsFrame);
             // Remember the request to send a response from onOpen().
-            upgradeFrames.add(new HeadersFrame(1, request, null, true));
+            upgradeFrames.add(new HeadersFrame(1, new Request(request), null, true));
         }
         return true;
     }
 
-    private class ServerHttpChannelOverHTTP2 extends HttpChannelOverHTTP2
+    private class ServerHttpChannelOverHTTP2 extends HttpChannelOverHTTP2 implements Closeable
     {
         public ServerHttpChannelOverHTTP2(Connector connector, HttpConfiguration configuration, EndPoint endPoint, HttpTransportOverHTTP2 transport)
         {
@@ -194,11 +223,31 @@ public class HTTP2ServerConnection extends HTTP2Connection implements Connection
         }
 
         @Override
+        public void recycle()
+        {
+            getStream().removeAttribute(IStream.CHANNEL_ATTRIBUTE);
+            super.recycle();
+            channels.offer(this);
+        }
+
+        @Override
         public void onCompleted()
         {
             super.onCompleted();
-            recycle();
-            channels.offer(this);
+            if (!getStream().isReset())
+                recycle();
+        }
+
+        @Override
+        public void close()
+        {
+            IStream stream = getStream();
+            if (LOG.isDebugEnabled())
+                LOG.debug("HTTP2 Request #{}/{} rejected", stream.getId(), Integer.toHexString(stream.getSession().hashCode()));
+            stream.reset(new ResetFrame(stream.getId(), ErrorCode.ENHANCE_YOUR_CALM_ERROR.code), Callback.NOOP);
+            // Consume the existing queued data frames to
+            // avoid stalling the session flow control.
+            consumeInput();
         }
     }
 }

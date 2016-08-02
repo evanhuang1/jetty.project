@@ -61,9 +61,10 @@ public class MessageWriterTest
     private WebSocketSession remoteSession;
 
     @After
-    public void closeSession()
+    public void closeSession() throws Exception
     {
         session.close();
+        session.stop();
         remoteSession.close();
     }
 
@@ -94,6 +95,8 @@ public class MessageWriterTest
         session.setPolicy(policy);
         // talk to our remote socket
         session.setOutgoingHandler(socketPipe);
+        // start session
+        session.start();
         // open connection
         session.open();
     }

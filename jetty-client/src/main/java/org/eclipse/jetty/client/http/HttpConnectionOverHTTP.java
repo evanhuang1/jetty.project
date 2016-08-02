@@ -18,6 +18,7 @@
 
 package org.eclipse.jetty.client.http;
 
+import java.nio.ByteBuffer;
 import java.nio.channels.AsynchronousCloseException;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -37,7 +38,7 @@ import org.eclipse.jetty.util.log.Log;
 import org.eclipse.jetty.util.log.Logger;
 import org.eclipse.jetty.util.thread.Sweeper;
 
-public class HttpConnectionOverHTTP extends AbstractConnection implements Connection, Sweeper.Sweepable
+public class HttpConnectionOverHTTP extends AbstractConnection implements Connection, org.eclipse.jetty.io.Connection.UpgradeFrom, Sweeper.Sweepable
 {
     private static final Logger LOG = Log.getLogger(HttpConnectionOverHTTP.class);
 
@@ -90,6 +91,7 @@ public class HttpConnectionOverHTTP extends AbstractConnection implements Connec
         promise.succeeded(this);
     }
 
+    @Override
     public boolean isClosed()
     {
         return closed.get();
@@ -98,9 +100,10 @@ public class HttpConnectionOverHTTP extends AbstractConnection implements Connec
     @Override
     public boolean onIdleExpired()
     {
-        boolean close = delegate.onIdleTimeout();
+        long idleTimeout = getEndPoint().getIdleTimeout();
+        boolean close = delegate.onIdleTimeout(idleTimeout);
         if (close)
-            close(new TimeoutException("Idle timeout " + getEndPoint().getIdleTimeout() + "ms"));
+            close(new TimeoutException("Idle timeout " + idleTimeout + " ms"));
         return false;
     }
 
@@ -120,6 +123,13 @@ public class HttpConnectionOverHTTP extends AbstractConnection implements Connec
         }
     }
 
+    @Override
+    public ByteBuffer onUpgradeFrom()
+    {
+        HttpReceiverOverHTTP receiver = channel.getHttpReceiver();
+        return receiver.onUpgradeFrom();
+    }
+
     public void release()
     {
         // Restore idle timeout
@@ -137,17 +147,16 @@ public class HttpConnectionOverHTTP extends AbstractConnection implements Connec
     {
         if (closed.compareAndSet(false, true))
         {
-            // First close then abort, to be sure that the connection cannot be reused
-            // from an onFailure() handler or by blocking code waiting for completion.
             getHttpDestination().close(this);
+
+            abort(failure);
+
             getEndPoint().shutdownOutput();
             if (LOG.isDebugEnabled())
                 LOG.debug("Shutdown {}", this);
             getEndPoint().close();
             if (LOG.isDebugEnabled())
                 LOG.debug("Closed {}", this);
-
-            abort(failure);
         }
     }
 
@@ -165,6 +174,11 @@ public class HttpConnectionOverHTTP extends AbstractConnection implements Connec
         if (sweeps.incrementAndGet() < 4)
             return false;
         return true;
+    }
+
+    public void remove()
+    {
+        getHttpDestination().remove(this);
     }
 
     @Override
@@ -205,6 +219,12 @@ public class HttpConnectionOverHTTP extends AbstractConnection implements Connec
         public void close()
         {
             HttpConnectionOverHTTP.this.close();
+        }
+
+        @Override
+        public boolean isClosed()
+        {
+            return HttpConnectionOverHTTP.this.isClosed();
         }
 
         @Override

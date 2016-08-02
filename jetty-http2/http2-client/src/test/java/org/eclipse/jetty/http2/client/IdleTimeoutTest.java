@@ -26,6 +26,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 
 import javax.servlet.ServletException;
+import javax.servlet.ServletInputStream;
 import javax.servlet.http.HttpServlet;
 import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpServletResponse;
@@ -33,6 +34,7 @@ import javax.servlet.http.HttpServletResponse;
 import org.eclipse.jetty.http.HttpFields;
 import org.eclipse.jetty.http.HttpVersion;
 import org.eclipse.jetty.http.MetaData;
+import org.eclipse.jetty.http2.FlowControlStrategy;
 import org.eclipse.jetty.http2.HTTP2Session;
 import org.eclipse.jetty.http2.api.Session;
 import org.eclipse.jetty.http2.api.Stream;
@@ -44,11 +46,11 @@ import org.eclipse.jetty.http2.frames.ResetFrame;
 import org.eclipse.jetty.util.Callback;
 import org.eclipse.jetty.util.FuturePromise;
 import org.eclipse.jetty.util.Promise;
+import org.eclipse.jetty.util.log.Log;
+import org.eclipse.jetty.util.thread.Invocable.InvocationType;
+import org.hamcrest.Matchers;
 import org.junit.Assert;
 import org.junit.Test;
-
-import static org.hamcrest.core.IsInstanceOf.instanceOf;
-import static org.junit.Assert.assertThat;
 
 public class IdleTimeoutTest extends AbstractTest
 {
@@ -93,9 +95,7 @@ public class IdleTimeoutTest extends AbstractTest
             }
         }, new Stream.Listener.Adapter());
 
-        Assert.assertTrue(latch.await(2 * idleTimeout, TimeUnit.MILLISECONDS));
-
-        sleep(1000);
+        Assert.assertTrue(latch.await(5 * idleTimeout, TimeUnit.MILLISECONDS));
     }
 
     @Test
@@ -135,7 +135,7 @@ public class IdleTimeoutTest extends AbstractTest
             }
         }, new Stream.Listener.Adapter());
 
-        Assert.assertTrue(latch.await(2 * idleTimeout, TimeUnit.MILLISECONDS));
+        Assert.assertTrue(latch.await(5 * idleTimeout, TimeUnit.MILLISECONDS));
     }
 
     @Test
@@ -189,7 +189,7 @@ public class IdleTimeoutTest extends AbstractTest
             }
         });
 
-        Assert.assertTrue(replyLatch.await(3 * idleTimeout, TimeUnit.MILLISECONDS));
+        Assert.assertTrue(replyLatch.await(5 * idleTimeout, TimeUnit.MILLISECONDS));
 
         // Just make sure onClose() has never been called, but don't wait too much
         Assert.assertFalse(closeLatch.await(idleTimeout / 2, TimeUnit.MILLISECONDS));
@@ -232,7 +232,7 @@ public class IdleTimeoutTest extends AbstractTest
             }
         }, new Stream.Listener.Adapter());
 
-        Assert.assertTrue(closeLatch.await(2 * idleTimeout, TimeUnit.MILLISECONDS));
+        Assert.assertTrue(closeLatch.await(5 * idleTimeout, TimeUnit.MILLISECONDS));
         Assert.assertTrue(session.isClosed());
     }
 
@@ -270,7 +270,7 @@ public class IdleTimeoutTest extends AbstractTest
             }
         }, new Stream.Listener.Adapter());
 
-        Assert.assertTrue(closeLatch.await(2 * idleTimeout, TimeUnit.MILLISECONDS));
+        Assert.assertTrue(closeLatch.await(5 * idleTimeout, TimeUnit.MILLISECONDS));
     }
 
     @Test
@@ -323,7 +323,7 @@ public class IdleTimeoutTest extends AbstractTest
         });
 
         Assert.assertFalse(closeLatch.await(2 * idleTimeout, TimeUnit.MILLISECONDS));
-        Assert.assertTrue(replyLatch.await(3 * idleTimeout, TimeUnit.MILLISECONDS));
+        Assert.assertTrue(replyLatch.await(5 * idleTimeout, TimeUnit.MILLISECONDS));
     }
 
     @Test
@@ -357,13 +357,14 @@ public class IdleTimeoutTest extends AbstractTest
             @Override
             public void onData(Stream stream, DataFrame frame, Callback callback)
             {
+                callback.succeeded();
                 dataLatch.countDown();
             }
 
             @Override
             public void onTimeout(Stream stream, Throwable x)
             {
-                assertThat(x, instanceOf(TimeoutException.class));
+                Assert.assertThat(x, Matchers.instanceOf(TimeoutException.class));
                 timeoutLatch.countDown();
             }
         });
@@ -461,19 +462,27 @@ public class IdleTimeoutTest extends AbstractTest
             {
                 sleep(idleTimeout / 2);
                 final boolean last = ++sends == 2;
-                stream.data(new DataFrame(stream.getId(), ByteBuffer.allocate(1), last), !last ? this : new Callback.NonBlocking()
+                stream.data(new DataFrame(stream.getId(), ByteBuffer.allocate(1), last), !last ? this : new Callback()
                 {
+                    @Override
+                    public InvocationType getInvocationType()
+                    {
+                        return InvocationType.NON_BLOCKING;
+                    }
                     @Override
                     public void succeeded()
                     {
+                        // Idle timeout should not fire while receiving.
+                        Assert.assertEquals(1, timeoutLatch.getCount());
                         dataLatch.countDown();
                     }
                 });
             }
         });
 
-        Assert.assertTrue(dataLatch.await(2 * idleTimeout, TimeUnit.MILLISECONDS));
-        Assert.assertFalse(timeoutLatch.await(0, TimeUnit.SECONDS));
+        Assert.assertTrue(dataLatch.await(5 * idleTimeout, TimeUnit.MILLISECONDS));
+        // The server did not send a response, so it will eventually timeout.
+        Assert.assertTrue(timeoutLatch.await(5 * idleTimeout, TimeUnit.SECONDS));
     }
 
     @Test
@@ -512,14 +521,73 @@ public class IdleTimeoutTest extends AbstractTest
         session.newStream(requestFrame, promise, new Stream.Listener.Adapter());
         final Stream stream = promise.get(5, TimeUnit.SECONDS);
 
+        Callback.Completable completable1 = new Callback.Completable();
         sleep(idleTimeout / 2);
-        stream.data(new DataFrame(stream.getId(), ByteBuffer.allocate(1), false), Callback.NOOP);
-        sleep(idleTimeout / 2);
-        stream.data(new DataFrame(stream.getId(), ByteBuffer.allocate(1), false), Callback.NOOP);
-        sleep(idleTimeout / 2);
-        stream.data(new DataFrame(stream.getId(), ByteBuffer.allocate(1), true), Callback.NOOP);
+        stream.data(new DataFrame(stream.getId(), ByteBuffer.allocate(1), false), completable1);
+        completable1.thenCompose(nil ->
+        {
+            Callback.Completable completable2 = new Callback.Completable();
+            sleep(idleTimeout / 2);
+            stream.data(new DataFrame(stream.getId(), ByteBuffer.allocate(1), false), completable2);
+            return completable2;
+        }).thenRun(() ->
+        {
+            sleep(idleTimeout / 2);
+            stream.data(new DataFrame(stream.getId(), ByteBuffer.allocate(1), true), Callback.NOOP);
+        });
 
-        Assert.assertFalse(resetLatch.await(0, TimeUnit.SECONDS));
+        Assert.assertFalse(resetLatch.await(1, TimeUnit.SECONDS));
+    }
+
+    @Test
+    public void testBufferedReadsResetStreamIdleTimeout() throws Exception
+    {
+        int bufferSize = 8192;
+        long delay = 1000;
+        start(new HttpServlet()
+        {
+            @Override
+            protected void service(HttpServletRequest request, HttpServletResponse response) throws ServletException, IOException
+            {
+                ServletInputStream input = request.getInputStream();
+                byte[] buffer = new byte[bufferSize];
+                while (true)
+                {
+                    int read = input.read(buffer);
+                    Log.getLogger(IdleTimeoutTest.class).info("Read {} bytes", read);
+                    if (read < 0)
+                        break;
+                    sleep(delay);
+                }
+            }
+        });
+        connector.setIdleTimeout(2 * delay);
+
+        Session session = newClient(new Session.Listener.Adapter());
+        MetaData.Request metaData = newRequest("POST", new HttpFields());
+        HeadersFrame requestFrame = new HeadersFrame(metaData, null, false);
+        FuturePromise<Stream> promise = new FuturePromise<>();
+        CountDownLatch latch = new CountDownLatch(1);
+        session.newStream(requestFrame, promise, new Stream.Listener.Adapter()
+        {
+            @Override
+            public void onHeaders(Stream stream, HeadersFrame frame)
+            {
+                if (frame.isEndStream())
+                    latch.countDown();
+            }
+        });
+        Stream stream = promise.get(5, TimeUnit.SECONDS);
+
+        // Send data larger than the flow control window.
+        // The client will send bytes up to the flow control window immediately
+        // and they will be buffered by the server; the Servlet will consume them slowly.
+        // Servlet reads should reset the idle timeout.
+        int contentLength = FlowControlStrategy.DEFAULT_WINDOW_SIZE + 1;
+        ByteBuffer data = ByteBuffer.allocate(contentLength);
+        stream.data(new DataFrame(stream.getId(), data, true), Callback.NOOP);
+
+        Assert.assertTrue(latch.await(2 * (contentLength / bufferSize + 1) * delay, TimeUnit.MILLISECONDS));
     }
 
     private void sleep(long value)

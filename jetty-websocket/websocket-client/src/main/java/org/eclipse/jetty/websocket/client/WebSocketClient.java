@@ -123,9 +123,13 @@ public class WebSocketClient extends ContainerLifeCycle implements WebSocketCont
 
     public WebSocketClient(SslContextFactory sslContextFactory, Executor executor, ByteBufferPool bufferPool, DecoratedObjectFactory objectFactory)
     {
-        this.executor = executor;
+        
         this.sslContextFactory = sslContextFactory;
-        this.bufferPool = bufferPool;
+        if(sslContextFactory!=null)
+            addBean(sslContextFactory);
+        setExecutor(executor);
+        setBufferPool(bufferPool);
+        
         this.objectFactory = objectFactory;
         this.extensionRegistry = new WebSocketExtensionFactory(this);
         
@@ -217,33 +221,27 @@ public class WebSocketClient extends ContainerLifeCycle implements WebSocketCont
         if (LOG.isDebugEnabled())
             LOG.debug("Starting {}",this);
 
-        if (sslContextFactory != null)
-        {
-            addBean(sslContextFactory);
-        }
-
         String name = WebSocketClient.class.getSimpleName() + "@" + hashCode();
 
         if (bufferPool == null)
         {
-            bufferPool = new MappedByteBufferPool();
+            setBufferPool(new MappedByteBufferPool());
         }
-        addBean(bufferPool);
 
         if (scheduler == null)
         {
             scheduler = new ScheduledExecutorScheduler(name + "-scheduler",daemon);
+            addBean(scheduler);
         }
-        addBean(scheduler);
 
         if (cookieStore == null)
         {
-            cookieStore = new HttpCookieStore.Empty();
+            setCookieStore(new HttpCookieStore.Empty());
         }
 
         if(this.sessionFactory == null)
         {
-            this.sessionFactory = new WebSocketSessionFactory(this);
+            setSessionFactory(new WebSocketSessionFactory(this));
         }
         
         if(this.objectFactory == null)
@@ -262,19 +260,20 @@ public class WebSocketClient extends ContainerLifeCycle implements WebSocketCont
     {
         if (LOG.isDebugEnabled())
             LOG.debug("Stopping {}",this);
+
         
         if (ShutdownThread.isRegistered(this))
         {
             ShutdownThread.deregister(this);
         }
 
+        super.doStop();
+        
         if (cookieStore != null)
         {
             cookieStore.removeAll();
             cookieStore = null;
         }
-
-        super.doStop();
         
         if (LOG.isDebugEnabled())
             LOG.debug("Stopped {}",this);
@@ -496,6 +495,7 @@ public class WebSocketClient extends ContainerLifeCycle implements WebSocketCont
 
     public void setBufferPool(ByteBufferPool bufferPool)
     {
+        updateBean(this.bufferPool,bufferPool);
         this.bufferPool = bufferPool;
     }
 
@@ -516,6 +516,7 @@ public class WebSocketClient extends ContainerLifeCycle implements WebSocketCont
 
     public void setCookieStore(CookieStore cookieStore)
     {
+        updateBean(this.cookieStore,cookieStore);
         this.cookieStore = cookieStore;
     }
     
@@ -565,6 +566,7 @@ public class WebSocketClient extends ContainerLifeCycle implements WebSocketCont
 
     public void setSessionFactory(SessionFactory sessionFactory)
     {
+        updateBean(this.sessionFactory,sessionFactory);
         this.sessionFactory = sessionFactory;
     }
 

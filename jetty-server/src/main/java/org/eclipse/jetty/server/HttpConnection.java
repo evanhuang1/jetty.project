@@ -24,6 +24,7 @@ import java.nio.channels.WritePendingException;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.atomic.AtomicInteger;
 
+import org.eclipse.jetty.http.HttpCompliance;
 import org.eclipse.jetty.http.HttpField;
 import org.eclipse.jetty.http.HttpGenerator;
 import org.eclipse.jetty.http.HttpHeader;
@@ -43,6 +44,7 @@ import org.eclipse.jetty.util.Callback;
 import org.eclipse.jetty.util.IteratingCallback;
 import org.eclipse.jetty.util.log.Log;
 import org.eclipse.jetty.util.log.Logger;
+import org.eclipse.jetty.util.thread.Invocable.InvocationType;
 
 /**
  * <p>A {@link Connection} that handles the HTTP protocol.</p>
@@ -70,6 +72,7 @@ public class HttpConnection extends AbstractConnection implements Runnable, Http
     private final BlockingReadCallback _blockingReadCallback = new BlockingReadCallback();
     private final AsyncReadCallback _asyncReadCallback = new AsyncReadCallback();
     private final SendCallback _sendCallback = new SendCallback();
+    private final boolean _recordHttpComplianceViolations;
 
     /**
      * Get the current connection that this thread is dispatched to.
@@ -90,7 +93,7 @@ public class HttpConnection extends AbstractConnection implements Runnable, Http
         return last;
     }
 
-    public HttpConnection(HttpConfiguration config, Connector connector, EndPoint endPoint)
+    public HttpConnection(HttpConfiguration config, Connector connector, EndPoint endPoint, HttpCompliance compliance, boolean recordComplianceViolations)
     {
         super(endPoint, connector.getExecutor());
         _config = config;
@@ -99,7 +102,8 @@ public class HttpConnection extends AbstractConnection implements Runnable, Http
         _generator = newHttpGenerator();
         _channel = newHttpChannel();
         _input = _channel.getRequest().getHttpInput();
-        _parser = newHttpParser();
+        _parser = newHttpParser(compliance);
+        _recordHttpComplianceViolations=recordComplianceViolations;
         if (LOG.isDebugEnabled())
             LOG.debug("New HTTP Connection {}", this);
     }
@@ -109,6 +113,11 @@ public class HttpConnection extends AbstractConnection implements Runnable, Http
         return _config;
     }
 
+    public boolean isRecordHttpComplianceViolations()
+    {
+        return _recordHttpComplianceViolations;
+    }
+
     protected HttpGenerator newHttpGenerator()
     {
         return new HttpGenerator(_config.getSendServerVersion(),_config.getSendXPoweredBy());
@@ -116,12 +125,14 @@ public class HttpConnection extends AbstractConnection implements Runnable, Http
 
     protected HttpChannelOverHttp newHttpChannel()
     {
-        return new HttpChannelOverHttp(this, _connector, _config, getEndPoint(), this);
+        HttpChannelOverHttp httpChannel = new HttpChannelOverHttp(this, _connector, _config, getEndPoint(), this);
+
+        return httpChannel;
     }
 
-    protected HttpParser newHttpParser()
+    protected HttpParser newHttpParser(HttpCompliance compliance)
     {
-        return new HttpParser(newRequestHandler(), getHttpConfiguration().getRequestHeaderSize());
+        return new HttpParser(newRequestHandler(), getHttpConfiguration().getRequestHeaderSize(), compliance);
     }
 
     protected HttpParser.RequestHandler newRequestHandler()
@@ -217,19 +228,20 @@ public class HttpConnection extends AbstractConnection implements Runnable, Http
         HttpConnection last=setCurrentConnection(this);
         try
         {
-            while (true)
+            while (getEndPoint().isOpen())
             {
-                // Fill the request buffer (if needed)
+                // Fill the request buffer (if needed).
                 int filled = fillRequestBuffer();
 
-                // Parse the request buffer
+                // Parse the request buffer.
                 boolean handle = parseRequestBuffer();
+
                 // If there was a connection upgrade, the other
                 // connection took over, nothing more to do here.
                 if (getEndPoint().getConnection()!=this)
                     break;
 
-                // Handle close parser
+                // Handle closed parser.
                 if (_parser.isClose() || _parser.isClosed())
                 {
                     close();
@@ -245,13 +257,14 @@ public class HttpConnection extends AbstractConnection implements Runnable, Http
                     if (suspended || getEndPoint().getConnection() != this)
                         break;
                 }
-
-                // Continue or break?
-                else if (filled<=0)
+                else
                 {
-                    if (filled==0)
-                        fillInterested();
-                    break;
+                    if (filled <= 0)
+                    {
+                        if (filled == 0)
+                            fillInterested();
+                        break;
+                    }
                 }
             }
         }
@@ -597,11 +610,11 @@ public class HttpConnection extends AbstractConnection implements Runnable, Http
         }
 
         @Override
-        public boolean isNonBlocking()
+        public InvocationType getInvocationType()
         {
             // This callback does not block, rather it wakes up the
             // thread that is blocked waiting on the read.
-            return true;
+            return InvocationType.NON_BLOCKING;
         }
     }
 
@@ -640,9 +653,9 @@ public class HttpConnection extends AbstractConnection implements Runnable, Http
         }
 
         @Override
-        public boolean isNonBlocking()
+        public InvocationType getInvocationType()
         {
-            return _callback.isNonBlocking();
+            return _callback.getInvocationType();
         }
 
         private boolean reset(MetaData.Response info, boolean head, ByteBuffer content, boolean last, Callback callback)
@@ -687,6 +700,9 @@ public class HttpConnection extends AbstractConnection implements Runnable, Http
 
                 switch (result)
                 {
+                    case NEED_INFO:
+                        throw new EofException("request lifecycle violation");
+                        
                     case NEED_HEADER:
                     {
                         _header = _bufferPool.acquire(_config.getResponseHeaderSize(), HEADER_BUFFER_DIRECT);

@@ -24,9 +24,11 @@ import java.net.InetSocketAddress;
 import java.net.URI;
 import java.nio.ByteBuffer;
 import java.util.HashMap;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.ServiceLoader;
 import java.util.concurrent.Executor;
 import java.util.function.Function;
 
@@ -97,7 +99,7 @@ import org.eclipse.jetty.websocket.common.reflect.DynamicArgsException;
 import org.eclipse.jetty.websocket.common.util.ReflectUtils;
 
 @ManagedObject("A Jetty WebSocket Session")
-public class WebSocketSession extends ContainerLifeCycle implements Session, WebSocketSessionScope, IncomingFrames, Connection.Listener, ConnectionStateListener
+public class WebSocketSession extends ContainerLifeCycle implements Session, RemoteEndpointFactory, WebSocketSessionScope, IncomingFrames, Connection.Listener, ConnectionStateListener
 {
     private static final Logger LOG = Log.getLogger(WebSocketSession.class);
     private static final Logger LOG_OPEN = Log.getLogger(WebSocketSession.class.getName() + "_OPEN");
@@ -125,9 +127,10 @@ public class WebSocketSession extends ContainerLifeCycle implements Session, Web
     private ClassLoader classLoader;
     private ExtensionFactory extensionFactory;
     private BatchMode batchmode = BatchMode.AUTO;
+    private RemoteEndpointFactory remoteEndpointFactory;
     private String protocolVersion;
     private Map<String, String[]> parameterMap = new HashMap<>();
-    private WebSocketRemoteEndpoint remote;
+    private RemoteEndpoint remote;
     private OutgoingFrames outgoingHandler;
     private WebSocketPolicy policy;
     private UpgradeRequest upgradeRequest;
@@ -356,13 +359,13 @@ public class WebSocketSession extends ContainerLifeCycle implements Session, Web
     public void close()
     {
         /* This is assumed to always be a NORMAL closure, no reason phrase */
-        connection.close(StatusCode.NORMAL, null);
+        close(StatusCode.NORMAL, null);
     }
 
     @Override
     public void close(CloseStatus closeStatus)
     {
-        this.close(closeStatus.getCode(), closeStatus.getPhrase());
+        close(closeStatus.getCode(),closeStatus.getPhrase());
     }
 
     @Override
@@ -394,6 +397,16 @@ public class WebSocketSession extends ContainerLifeCycle implements Session, Web
         if (LOG.isDebugEnabled())
             LOG.debug("starting - {}", this);
 
+        Iterator<RemoteEndpointFactory> iter = ServiceLoader.load(RemoteEndpointFactory.class).iterator();
+        if (iter.hasNext())
+            remoteEndpointFactory = iter.next();
+
+        if (remoteEndpointFactory == null)
+            remoteEndpointFactory = this;
+
+        if (LOG.isDebugEnabled())
+            LOG.debug("Using RemoteEndpointFactory: {}", remoteEndpointFactory);
+
         super.doStart();
     }
 
@@ -403,16 +416,13 @@ public class WebSocketSession extends ContainerLifeCycle implements Session, Web
         if (LOG.isDebugEnabled())
             LOG.debug("stopping - {}", this);
 
-        if (getConnection() != null)
+        try
         {
-            try
-            {
-                getConnection().close(StatusCode.SHUTDOWN, "Shutdown");
-            }
-            catch (Throwable t)
-            {
-                LOG.debug("During Connection Shutdown", t);
-            }
+            close(StatusCode.SHUTDOWN,"Shutdown");
+        }
+        catch (Throwable t)
+        {
+            LOG.debug("During Connection Shutdown",t);
         }
         super.doStop();
     }
@@ -833,6 +843,11 @@ public class WebSocketSession extends ContainerLifeCycle implements Session, Web
         }
     }
 
+    public WebSocketRemoteEndpoint newRemoteEndpoint(LogicalConnection connection, OutgoingFrames outgoingFrames, BatchMode batchMode)
+    {
+        return new WebSocketRemoteEndpoint(connection,outgoingHandler,getBatchMode());
+    }
+
     /**
      * Open/Activate the session
      */
@@ -853,7 +868,7 @@ public class WebSocketSession extends ContainerLifeCycle implements Session, Web
             connection.getIOState().onConnected();
 
             // Connect remote
-            remote = new WebSocketRemoteEndpoint(connection, outgoingHandler, getBatchMode());
+            remote = remoteEndpointFactory.newRemoteEndpoint(connection,outgoingHandler,getBatchMode());
             if (LOG_OPEN.isDebugEnabled())
                 LOG_OPEN.debug("[{}] {}.open() remote={}", policy.getBehavior(), this.getClass().getSimpleName(), remote);
 
@@ -988,4 +1003,10 @@ public class WebSocketSession extends ContainerLifeCycle implements Session, Web
         return sb.toString();
     }
 
+    public static interface Listener
+    {
+        void onOpened(WebSocketSession session);
+
+        void onClosed(WebSocketSession session);
+    }
 }

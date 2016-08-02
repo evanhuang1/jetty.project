@@ -1,6 +1,7 @@
-#
-# Jetty HTTP Connector
-#
+[description]
+Enables a HTTP connector on the server.
+By default HTTP/1 is support, but HTTP2C can
+be added to the connector with the http2c module.
 
 [depend]
 server
@@ -34,3 +35,6 @@ etc/jetty-http.xml
 
 ## Thread priority delta to give to acceptor threads
 # jetty.http.acceptorPriorityDelta=0
+
+## HTTP Compliance: RFC7230, RFC2616, LEGACY
+# jetty.http.compliance=RFC7230

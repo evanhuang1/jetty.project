@@ -22,8 +22,9 @@ import java.io.IOException;
 import java.io.InterruptedIOException;
 import java.nio.ByteBuffer;
 import java.util.ArrayDeque;
+import java.util.Deque;
 import java.util.Objects;
-import java.util.Queue;
+import java.util.concurrent.Executor;
 import java.util.concurrent.TimeoutException;
 
 import javax.servlet.ReadListener;
@@ -35,6 +36,7 @@ import org.eclipse.jetty.util.BufferUtil;
 import org.eclipse.jetty.util.Callback;
 import org.eclipse.jetty.util.log.Log;
 import org.eclipse.jetty.util.log.Logger;
+import org.eclipse.jetty.util.thread.Invocable.InvocationType;
 
 /**
  * {@link HttpInput} provides an implementation of {@link ServletInputStream} for {@link HttpChannel}.
@@ -51,7 +53,7 @@ public class HttpInput extends ServletInputStream implements Runnable
     private final static Content EARLY_EOF_CONTENT = new EofContent("EARLY_EOF");
 
     private final byte[] _oneByteBuffer = new byte[1];
-    private final Queue<Content> _inputQ = new ArrayDeque<>();
+    private final Deque<Content> _inputQ = new ArrayDeque<>();
     private final HttpChannelState _channelState;
     private ReadListener _listener;
     private State _state = STREAM;
@@ -118,7 +120,9 @@ public class HttpInput extends ServletInputStream implements Runnable
 
     private void wake()
     {
-        _channelState.getHttpChannel().getConnector().getExecutor().execute(_channelState.getHttpChannel());
+        HttpChannel channel = _channelState.getHttpChannel();
+        Executor executor = channel.getConnector().getServer().getThreadPool();
+        executor.execute(channel);
     }
 
 
@@ -144,9 +148,9 @@ public class HttpInput extends ServletInputStream implements Runnable
                 Content item = nextContent();
                 if (item!=null)
                 {
-                    if (LOG.isDebugEnabled())
-                        LOG.debug("{} read {} from {}",this,len,item);
                     int l = get(item, b, off, len);
+                    if (LOG.isDebugEnabled())
+                        LOG.debug("{} read {} from {}",this,l,item);
 
                     consumeNonContent();
 
@@ -354,7 +358,7 @@ public class HttpInput extends ServletInputStream implements Runnable
             }
 
             if (LOG.isDebugEnabled())
-                LOG.debug("{} blocking for content timeout={} ...", this,timeout);
+                LOG.debug("{} blocking for content timeout={}", this,timeout);
             if (timeout>0)
                 _inputQ.wait(timeout);
             else
@@ -367,6 +371,33 @@ public class HttpInput extends ServletInputStream implements Runnable
         {
             throw (IOException)new InterruptedIOException().initCause(e);
         }
+    }
+
+    /**
+     * Adds some content to the start of this input stream.
+     * <p>Typically used to push back content that has
+     * been read, perhaps mutated.  The bytes prepended are
+     * deducted for the contentConsumed total</p>
+     * @param item the content to add
+     * @return true if content channel woken for read
+     */
+    public boolean prependContent(Content item)
+    {
+        boolean woken=false;
+        synchronized (_inputQ)
+        {
+            _inputQ.push(item);
+            _contentConsumed-=item.remaining();
+            if (LOG.isDebugEnabled())
+                LOG.debug("{} prependContent {}", this, item);
+
+            if (_listener==null)
+                _inputQ.notify();
+            else
+                woken=_channelState.onReadPossible();
+        }
+
+        return woken;
     }
 
     /**
@@ -637,11 +668,24 @@ public class HttpInput extends ServletInputStream implements Runnable
     @Override
     public String toString()
     {
-        return String.format("%s@%x[c=%d,s=%s]",
+        State state;
+        long consumed;
+        int q;
+        Content content;
+        synchronized (_inputQ)
+        {
+            state=_state;
+            consumed=_contentConsumed;
+            q=_inputQ.size();
+            content=_inputQ.peekFirst();
+        }
+        return String.format("%s@%x[c=%d,q=%d,[0]=%s,s=%s]",
                 getClass().getSimpleName(),
                 hashCode(),
-                _contentConsumed,
-                _state);
+                consumed,
+                q,
+                content,
+                state);
     }
 
     public static class PoisonPillContent extends Content
@@ -678,11 +722,10 @@ public class HttpInput extends ServletInputStream implements Runnable
         }
 
         @Override
-        public boolean isNonBlocking()
+        public InvocationType getInvocationType()
         {
-            return true;
+            return InvocationType.NON_BLOCKING;
         }
-
 
         public ByteBuffer getContent()
         {
@@ -815,5 +858,4 @@ public class HttpInput extends ServletInputStream implements Runnable
             return "AEOF";
         }
     };
-
 }

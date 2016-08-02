@@ -29,10 +29,11 @@ import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpServletResponse;
 
 import org.eclipse.jetty.server.Dispatcher;
+import org.eclipse.jetty.server.HttpChannel;
 import org.eclipse.jetty.server.LocalConnector;
+import org.eclipse.jetty.server.QuietServletException;
 import org.eclipse.jetty.server.Server;
-import org.eclipse.jetty.util.log.Log;
-import org.eclipse.jetty.util.log.StdErrLog;
+import org.eclipse.jetty.util.log.StacklessLogging;
 import org.hamcrest.Matchers;
 import org.junit.After;
 import org.junit.Before;
@@ -45,6 +46,7 @@ public class ErrorPageTest
 {
     private Server _server;
     private LocalConnector _connector;
+    private StacklessLogging _stackless;
 
     @Before
     public void init() throws Exception
@@ -69,13 +71,13 @@ public class ErrorPageTest
         error.addErrorPage(ErrorPageErrorHandler.GLOBAL_ERROR_PAGE,"/error/GlobalErrorPage");
         
         _server.start();
-        ((StdErrLog)Log.getLogger(ServletHandler.class)).setHideStacks(true);
+        _stackless=new StacklessLogging(ServletHandler.class);
     }
 
     @After
     public void destroy() throws Exception
     {
-        ((StdErrLog)Log.getLogger(ServletHandler.class)).setHideStacks(false);
+        _stackless.close();
         _server.stop();
         _server.join();
     }
@@ -83,7 +85,7 @@ public class ErrorPageTest
     @Test
     public void testErrorCode() throws Exception
     {
-        String response = _connector.getResponses("GET /fail/code?code=599 HTTP/1.0\r\n\r\n");
+        String response = _connector.getResponse("GET /fail/code?code=599 HTTP/1.0\r\n\r\n");
         assertThat(response,Matchers.containsString("HTTP/1.1 599 599"));
         assertThat(response,Matchers.containsString("ERROR_PAGE: /599"));
         assertThat(response,Matchers.containsString("ERROR_CODE: 599"));
@@ -96,20 +98,23 @@ public class ErrorPageTest
     @Test
     public void testErrorException() throws Exception
     {
-        String response = _connector.getResponses("GET /fail/exception HTTP/1.0\r\n\r\n");
-        assertThat(response,Matchers.containsString("HTTP/1.1 500 Server Error"));
-        assertThat(response,Matchers.containsString("ERROR_PAGE: /TestException"));
-        assertThat(response,Matchers.containsString("ERROR_CODE: 500"));
-        assertThat(response,Matchers.containsString("ERROR_EXCEPTION: javax.servlet.ServletException: java.lang.IllegalStateException"));
-        assertThat(response,Matchers.containsString("ERROR_EXCEPTION_TYPE: class javax.servlet.ServletException"));
-        assertThat(response,Matchers.containsString("ERROR_SERVLET: org.eclipse.jetty.servlet.ErrorPageTest$FailServlet-"));
-        assertThat(response,Matchers.containsString("ERROR_REQUEST_URI: /fail/exception"));
+        try(StacklessLogging stackless = new StacklessLogging(HttpChannel.class))
+        {
+            String response = _connector.getResponse("GET /fail/exception HTTP/1.0\r\n\r\n");
+            assertThat(response,Matchers.containsString("HTTP/1.1 500 Server Error"));
+            assertThat(response,Matchers.containsString("ERROR_PAGE: /TestException"));
+            assertThat(response,Matchers.containsString("ERROR_CODE: 500"));
+            assertThat(response,Matchers.containsString("ERROR_EXCEPTION: javax.servlet.ServletException: java.lang.IllegalStateException"));
+            assertThat(response,Matchers.containsString("ERROR_EXCEPTION_TYPE: class javax.servlet.ServletException"));
+            assertThat(response,Matchers.containsString("ERROR_SERVLET: org.eclipse.jetty.servlet.ErrorPageTest$FailServlet-"));
+            assertThat(response,Matchers.containsString("ERROR_REQUEST_URI: /fail/exception"));
+        }
     }
     
     @Test
     public void testGlobalErrorCode() throws Exception
     {
-        String response = _connector.getResponses("GET /fail/global?code=598 HTTP/1.0\r\n\r\n");
+        String response = _connector.getResponse("GET /fail/global?code=598 HTTP/1.0\r\n\r\n");
         assertThat(response,Matchers.containsString("HTTP/1.1 598 598"));
         assertThat(response,Matchers.containsString("ERROR_PAGE: /GlobalErrorPage"));
         assertThat(response,Matchers.containsString("ERROR_CODE: 598"));
@@ -122,14 +127,17 @@ public class ErrorPageTest
     @Test
     public void testGlobalErrorException() throws Exception
     {
-        String response = _connector.getResponses("GET /fail/global?code=NAN HTTP/1.0\r\n\r\n");
-        assertThat(response,Matchers.containsString("HTTP/1.1 500 Server Error"));
-        assertThat(response,Matchers.containsString("ERROR_PAGE: /GlobalErrorPage"));
-        assertThat(response,Matchers.containsString("ERROR_CODE: 500"));
-        assertThat(response,Matchers.containsString("ERROR_EXCEPTION: java.lang.NumberFormatException: For input string: \"NAN\""));
-        assertThat(response,Matchers.containsString("ERROR_EXCEPTION_TYPE: class java.lang.NumberFormatException"));
-        assertThat(response,Matchers.containsString("ERROR_SERVLET: org.eclipse.jetty.servlet.ErrorPageTest$FailServlet-"));
-        assertThat(response,Matchers.containsString("ERROR_REQUEST_URI: /fail/global"));
+        try(StacklessLogging stackless = new StacklessLogging(HttpChannel.class))
+        {
+            String response = _connector.getResponse("GET /fail/global?code=NAN HTTP/1.0\r\n\r\n");
+            assertThat(response,Matchers.containsString("HTTP/1.1 500 Server Error"));
+            assertThat(response,Matchers.containsString("ERROR_PAGE: /GlobalErrorPage"));
+            assertThat(response,Matchers.containsString("ERROR_CODE: 500"));
+            assertThat(response,Matchers.containsString("ERROR_EXCEPTION: java.lang.NumberFormatException: For input string: \"NAN\""));
+            assertThat(response,Matchers.containsString("ERROR_EXCEPTION_TYPE: class java.lang.NumberFormatException"));
+            assertThat(response,Matchers.containsString("ERROR_SERVLET: org.eclipse.jetty.servlet.ErrorPageTest$FailServlet-"));
+            assertThat(response,Matchers.containsString("ERROR_REQUEST_URI: /fail/global"));
+        }
     }
 
     public static class FailServlet extends HttpServlet implements Servlet

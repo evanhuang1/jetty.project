@@ -23,8 +23,8 @@ import java.net.HttpCookie;
 import java.net.URI;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
-import java.util.concurrent.atomic.AtomicInteger;
 
 import org.eclipse.jetty.client.api.Authentication;
 import org.eclipse.jetty.client.api.Connection;
@@ -35,7 +35,7 @@ import org.eclipse.jetty.http.HttpField;
 import org.eclipse.jetty.http.HttpFields;
 import org.eclipse.jetty.http.HttpHeader;
 import org.eclipse.jetty.http.HttpHeaderValue;
-import org.eclipse.jetty.http.HttpMethod;
+import org.eclipse.jetty.http.HttpScheme;
 import org.eclipse.jetty.http.HttpVersion;
 import org.eclipse.jetty.util.log.Log;
 import org.eclipse.jetty.util.log.Logger;
@@ -45,12 +45,14 @@ public abstract class HttpConnection implements Connection
     private static final Logger LOG = Log.getLogger(HttpConnection.class);
     private static final HttpField CHUNKED_FIELD = new HttpField(HttpHeader.TRANSFER_ENCODING, HttpHeaderValue.CHUNKED);
 
-    private final AtomicInteger idleTimeoutState = new AtomicInteger();
     private final HttpDestination destination;
+    private int idleTimeoutGuard;
+    private long idleTimeoutStamp;
 
     protected HttpConnection(HttpDestination destination)
     {
         this.destination = destination;
+        this.idleTimeoutStamp = System.nanoTime();
     }
 
     public HttpClient getHttpClient()
@@ -87,7 +89,6 @@ public abstract class HttpConnection implements Connection
 
     protected void normalizeRequest(Request request)
     {
-        String method = request.getMethod();
         HttpVersion version = request.getVersion();
         HttpFields headers = request.getHeaders();
         ContentProvider content = request.getContent();
@@ -100,14 +101,17 @@ public abstract class HttpConnection implements Connection
             path = "/";
             request.path(path);
         }
-        if (proxy != null && !HttpMethod.CONNECT.is(method))
+
+        URI uri = request.getURI();
+
+        if (proxy instanceof HttpProxy && !HttpClient.isSchemeSecure(request.getScheme()) && uri != null)
         {
-            path = request.getURI().toString();
+            path = uri.toString();
             request.path(path);
         }
 
         // If we are HTTP 1.1, add the Host header
-        if (version.getVersion() > 10)
+        if (version.getVersion() == 11)
         {
             if (!headers.containsKey(HttpHeader.HOST.asString()))
                 headers.put(getHttpDestination().getHostField());
@@ -142,7 +146,6 @@ public abstract class HttpConnection implements Connection
         CookieStore cookieStore = getHttpClient().getCookieStore();
         if (cookieStore != null)
         {
-            URI uri = request.getURI();
             StringBuilder cookies = null;
             if (uri != null)
                 cookies = convertCookies(cookieStore.get(uri), null);
@@ -151,14 +154,9 @@ public abstract class HttpConnection implements Connection
                 request.header(HttpHeader.COOKIE.asString(), cookies.toString());
         }
 
-        // Authorization
-        URI authenticationURI = proxy != null ? proxy.getURI() : request.getURI();
-        if (authenticationURI != null)
-        {
-            Authentication.Result authnResult = getHttpClient().getAuthenticationStore().findAuthenticationResult(authenticationURI);
-            if (authnResult != null)
-                authnResult.apply(request);
-        }
+        // Authentication
+        applyAuthentication(request, proxy != null ? proxy.getURI() : null);
+        applyAuthentication(request, uri);
     }
 
     private StringBuilder convertCookies(List<HttpCookie> cookies, StringBuilder builder)
@@ -175,22 +173,27 @@ public abstract class HttpConnection implements Connection
         return builder;
     }
 
+    private void applyAuthentication(Request request, URI uri)
+    {
+        if (uri != null)
+        {
+            Authentication.Result result = getHttpClient().getAuthenticationStore().findAuthenticationResult(uri);
+            if (result != null)
+                result.apply(request);
+        }
+    }
+
     protected SendFailure send(HttpChannel channel, HttpExchange exchange)
     {
         // Forbid idle timeouts for the time window where
         // the request is associated to the channel and sent.
         // Use a counter to support multiplexed requests.
-        boolean send = false;
-        while (true)
+        boolean send;
+        synchronized (this)
         {
-            int current = idleTimeoutState.get();
-            if (current < 0)
-                break;
-            if (idleTimeoutState.compareAndSet(current, current + 1))
-            {
-                send = true;
-                break;
-            }
+            send = idleTimeoutGuard >= 0;
+            if (send)
+                ++idleTimeoutGuard;
         }
 
         if (send)
@@ -207,7 +210,13 @@ public abstract class HttpConnection implements Connection
                 channel.release();
                 result = new SendFailure(new HttpRequestException("Could not associate request to connection", request), false);
             }
-            idleTimeoutState.decrementAndGet();
+
+            synchronized (this)
+            {
+                --idleTimeoutGuard;
+                idleTimeoutStamp = System.nanoTime();
+            }
+
             return result;
         }
         else
@@ -216,11 +225,27 @@ public abstract class HttpConnection implements Connection
         }
     }
 
-    public boolean onIdleTimeout()
+    public boolean onIdleTimeout(long idleTimeout)
     {
-        if (LOG.isDebugEnabled())
-            LOG.debug("Idle timeout state {} - {}", idleTimeoutState, this);
-        return idleTimeoutState.compareAndSet(0, -1);
+        synchronized (this)
+        {
+            if (idleTimeoutGuard == 0)
+            {
+                long elapsed = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - idleTimeoutStamp);
+                boolean idle = elapsed > idleTimeout / 2;
+                if (idle)
+                    idleTimeoutGuard = -1;
+                if (LOG.isDebugEnabled())
+                    LOG.debug("Idle timeout {}/{}ms - {}", elapsed, idleTimeout, this);
+                return idle;
+            }
+            else
+            {
+                if (LOG.isDebugEnabled())
+                    LOG.debug("Idle timeout skipped - {}", this);
+                return false;
+            }
+        }
     }
 
     @Override

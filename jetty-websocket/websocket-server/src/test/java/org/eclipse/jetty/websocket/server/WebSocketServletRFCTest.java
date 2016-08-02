@@ -74,6 +74,12 @@ public class WebSocketServletRFCTest
         server.stop();
     }
 
+    /**
+     * @param clazz the class to enable
+     * @param enabled true to enable the stack traces (or not)
+     * @deprecated use {@link StacklessLogging} in a try-with-resources block instead
+     */
+    @Deprecated
     private void enableStacks(Class<?> clazz, boolean enabled)
     {
         StdErrLog log = StdErrLog.getLogger(clazz);
@@ -185,7 +191,7 @@ public class WebSocketServletRFCTest
             client.write(new TextFrame().setPayload(msg));
 
             // Read frame (hopefully text frame)
-            EventQueue<WebSocketFrame> frames = client.readFrames(1,500,TimeUnit.MILLISECONDS);
+            EventQueue<WebSocketFrame> frames = client.readFrames(1,30,TimeUnit.SECONDS);
             WebSocketFrame tf = frames.poll();
             Assert.assertThat("Text Frame.status code",tf.getPayloadAsUTF8(),is(msg));
         }
@@ -203,8 +209,8 @@ public class WebSocketServletRFCTest
     @Test
     public void testInternalError() throws Exception
     {
-        BlockheadClient client = new BlockheadClient(server.getServerUri());
-        try
+        try (BlockheadClient client = new BlockheadClient(server.getServerUri());
+             StacklessLogging stackless=new StacklessLogging(EventDriver.class))
         {
             client.connect();
             client.sendStandardRequest();
@@ -216,15 +222,11 @@ public class WebSocketServletRFCTest
                 client.write(new TextFrame().setPayload("CRASH"));
 
                 // Read frame (hopefully close frame)
-                EventQueue<WebSocketFrame> frames = client.readFrames(1,500,TimeUnit.MILLISECONDS);
+                EventQueue<WebSocketFrame> frames = client.readFrames(1,30,TimeUnit.SECONDS);
                 Frame cf = frames.poll();
                 CloseInfo close = new CloseInfo(cf);
                 Assert.assertThat("Close Frame.status code",close.getStatusCode(),is(StatusCode.SERVER_ERROR));
             }
-        }
-        finally
-        {
-            client.close();
         }
     }
 
@@ -261,7 +263,7 @@ public class WebSocketServletRFCTest
             client.write(new TextFrame().setPayload(msg));
 
             // Read frame (hopefully text frame)
-            EventQueue<WebSocketFrame> frames = client.readFrames(1,500,TimeUnit.MILLISECONDS);
+            EventQueue<WebSocketFrame> frames = client.readFrames(1,30,TimeUnit.SECONDS);
             WebSocketFrame tf = frames.poll();
             Assert.assertThat("Text Frame.status code",tf.getPayloadAsUTF8(),is(msg));
         }
@@ -274,13 +276,10 @@ public class WebSocketServletRFCTest
     @Test
     public void testTextNotUTF8() throws Exception
     {
-        // Disable Long Stacks from Parser (we know this test will throw an exception)
-        enableStacks(Parser.class,false);
-
-        BlockheadClient client = new BlockheadClient(server.getServerUri());
-        client.setProtocols("other");
-        try
+        try (StacklessLogging stackless=new StacklessLogging(Parser.class);
+             BlockheadClient client = new BlockheadClient(server.getServerUri()))
         {
+            client.setProtocols("other");
             client.connect();
             client.sendStandardRequest();
             client.expectUpgradeResponse();
@@ -299,12 +298,6 @@ public class WebSocketServletRFCTest
             Assert.assertThat("frames[0].opcode",frame.getOpCode(),is(OpCode.CLOSE));
             CloseInfo close = new CloseInfo(frame);
             Assert.assertThat("Close Status Code",close.getStatusCode(),is(StatusCode.BAD_PAYLOAD));
-        }
-        finally
-        {
-            // Reenable Long Stacks from Parser
-            enableStacks(Parser.class,true);
-            client.close();
         }
     }
 
@@ -341,7 +334,7 @@ public class WebSocketServletRFCTest
             client.write(new TextFrame().setPayload(msg));
 
             // Read frame (hopefully text frame)
-            EventQueue<WebSocketFrame> frames = client.readFrames(1,500,TimeUnit.MILLISECONDS);
+            EventQueue<WebSocketFrame> frames = client.readFrames(1,30,TimeUnit.SECONDS);
             WebSocketFrame tf = frames.poll();
             Assert.assertThat("Text Frame.status code",tf.getPayloadAsUTF8(),is(msg));
         }

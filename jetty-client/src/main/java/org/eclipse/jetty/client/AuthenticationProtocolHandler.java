@@ -26,11 +26,13 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 import org.eclipse.jetty.client.api.Authentication;
+import org.eclipse.jetty.client.api.Connection;
 import org.eclipse.jetty.client.api.ContentResponse;
 import org.eclipse.jetty.client.api.Request;
 import org.eclipse.jetty.client.api.Response;
 import org.eclipse.jetty.client.api.Result;
 import org.eclipse.jetty.client.util.BufferingResponseListener;
+import org.eclipse.jetty.http.HttpField;
 import org.eclipse.jetty.http.HttpHeader;
 import org.eclipse.jetty.util.log.Log;
 import org.eclipse.jetty.util.log.Logger;
@@ -39,8 +41,7 @@ public abstract class AuthenticationProtocolHandler implements ProtocolHandler
 {
     public static final int DEFAULT_MAX_CONTENT_LENGTH = 16*1024;
     public static final Logger LOG = Log.getLogger(AuthenticationProtocolHandler.class);
-    private static final Pattern AUTHENTICATE_PATTERN = Pattern.compile("([^\\s]+)\\s+realm=\"([^\"]+)\"(.*)", Pattern.CASE_INSENSITIVE);
-    private static final String AUTHENTICATION_ATTRIBUTE = AuthenticationProtocolHandler.class.getName() + ".authentication";
+    private static final Pattern AUTHENTICATE_PATTERN = Pattern.compile("([^\\s]+)\\s+realm=\"([^\"]*)\"(.*)", Pattern.CASE_INSENSITIVE);
 
     private final HttpClient client;
     private final int maxContentLength;
@@ -64,6 +65,8 @@ public abstract class AuthenticationProtocolHandler implements ProtocolHandler
 
     protected abstract URI getAuthenticationURI(Request request);
 
+    protected abstract String getAuthenticationAttribute();
+
     @Override
     public Response.Listener getResponseListener()
     {
@@ -85,15 +88,15 @@ public abstract class AuthenticationProtocolHandler implements ProtocolHandler
             ContentResponse response = new HttpContentResponse(result.getResponse(), getContent(), getMediaType(), getEncoding());
             if (result.isFailed())
             {
-                Throwable failure = result.getFailure();
                 if (LOG.isDebugEnabled())
-                    LOG.debug("Authentication challenge failed {}", failure);
+                    LOG.debug("Authentication challenge failed {}", result.getFailure());
                 forwardFailureComplete(request, result.getRequestFailure(), response, result.getResponseFailure());
                 return;
             }
 
+            String authenticationAttribute = getAuthenticationAttribute();
             HttpConversation conversation = request.getConversation();
-            if (conversation.getAttribute(AUTHENTICATION_ATTRIBUTE) != null)
+            if (conversation.getAttribute(authenticationAttribute) != null)
             {
                 // We have already tried to authenticate, but we failed again
                 if (LOG.isDebugEnabled())
@@ -114,12 +117,12 @@ public abstract class AuthenticationProtocolHandler implements ProtocolHandler
 
             Authentication authentication = null;
             Authentication.HeaderInfo headerInfo = null;
-            URI uri = getAuthenticationURI(request);
-            if (uri != null)
+            URI authURI = getAuthenticationURI(request);
+            if (authURI != null)
             {
                 for (Authentication.HeaderInfo element : headerInfos)
                 {
-                    authentication = client.getAuthenticationStore().findAuthentication(element.getType(), uri, element.getRealm());
+                    authentication = client.getAuthenticationStore().findAuthentication(element.getType(), authURI, element.getRealm());
                     if (authentication != null)
                     {
                         headerInfo = element;
@@ -146,18 +149,35 @@ public abstract class AuthenticationProtocolHandler implements ProtocolHandler
                     return;
                 }
 
-                conversation.setAttribute(AUTHENTICATION_ATTRIBUTE, true);
+                conversation.setAttribute(authenticationAttribute, true);
 
-                Request newRequest = client.copyRequest(request, request.getURI());
-                authnResult.apply(newRequest);
-                newRequest.onResponseSuccess(new Response.SuccessListener()
+                URI requestURI = request.getURI();
+                String path = null;
+                if (requestURI == null)
                 {
-                    @Override
-                    public void onSuccess(Response response)
-                    {
-                        client.getAuthenticationStore().addAuthenticationResult(authnResult);
-                    }
-                }).send(null);
+                    String uri = request.getScheme() + "://" + request.getHost();
+                    int port = request.getPort();
+                    if (port > 0)
+                        uri += ":" + port;
+                    requestURI = URI.create(uri);
+                    path = request.getPath();
+                }
+                Request newRequest = client.copyRequest(request, requestURI);
+                if (path != null)
+                    newRequest.path(path);
+
+                authnResult.apply(newRequest);
+                // Copy existing, explicitly set, authorization headers.
+                copyIfAbsent(request, newRequest, HttpHeader.AUTHORIZATION);
+                copyIfAbsent(request, newRequest, HttpHeader.PROXY_AUTHORIZATION);
+
+                newRequest.onResponseSuccess(r -> client.getAuthenticationStore().addAuthenticationResult(authnResult));
+
+                Connection connection = (Connection)request.getAttributes().get(Connection.class.getName());
+                if (connection != null)
+                    connection.send(newRequest, null);
+                else
+                    newRequest.send(null);
             }
             catch (Throwable x)
             {
@@ -165,6 +185,13 @@ public abstract class AuthenticationProtocolHandler implements ProtocolHandler
                     LOG.debug("Authentication failed", x);
                 forwardFailureComplete(request, null, response, x);
             }
+        }
+
+        private void copyIfAbsent(HttpRequest oldRequest, Request newRequest, HttpHeader header)
+        {
+            HttpField field = oldRequest.getHeaders().getField(header);
+            if (field != null && !newRequest.getHeaders().contains(header))
+                newRequest.getHeaders().put(field);
         }
 
         private void forwardSuccessComplete(HttpRequest request, Response response)
@@ -178,7 +205,12 @@ public abstract class AuthenticationProtocolHandler implements ProtocolHandler
         {
             HttpConversation conversation = request.getConversation();
             conversation.updateResponseListeners(null);
-            notifier.forwardFailureComplete(conversation.getResponseListeners(), request, requestFailure, response, responseFailure);
+            List<Response.ResponseListener> responseListeners = conversation.getResponseListeners();
+            if (responseFailure == null)
+                notifier.forwardSuccess(responseListeners, response);
+            else
+                notifier.forwardFailure(responseListeners, response, responseFailure);
+            notifier.notifyComplete(responseListeners, new Result(request, requestFailure, response, responseFailure));
         }
 
         private List<Authentication.HeaderInfo> parseAuthenticateHeader(Response response, HttpHeader header)

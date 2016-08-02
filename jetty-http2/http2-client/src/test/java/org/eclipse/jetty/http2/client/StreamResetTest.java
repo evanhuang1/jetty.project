@@ -37,6 +37,9 @@ import org.eclipse.jetty.http.HttpFields;
 import org.eclipse.jetty.http.HttpVersion;
 import org.eclipse.jetty.http.MetaData;
 import org.eclipse.jetty.http2.ErrorCode;
+import org.eclipse.jetty.http2.FlowControlStrategy;
+import org.eclipse.jetty.http2.ISession;
+import org.eclipse.jetty.http2.IStream;
 import org.eclipse.jetty.http2.api.Session;
 import org.eclipse.jetty.http2.api.Stream;
 import org.eclipse.jetty.http2.api.server.ServerSessionListener;
@@ -44,9 +47,12 @@ import org.eclipse.jetty.http2.frames.DataFrame;
 import org.eclipse.jetty.http2.frames.HeadersFrame;
 import org.eclipse.jetty.http2.frames.ResetFrame;
 import org.eclipse.jetty.server.HttpOutput;
+import org.eclipse.jetty.servlet.ServletHandler;
 import org.eclipse.jetty.util.Callback;
 import org.eclipse.jetty.util.FutureCallback;
 import org.eclipse.jetty.util.FuturePromise;
+import org.eclipse.jetty.util.log.StacklessLogging;
+import org.hamcrest.Matchers;
 import org.junit.Assert;
 import org.junit.Test;
 
@@ -126,29 +132,38 @@ public class StreamResetTest extends AbstractTest
             {
                 MetaData.Response response = new MetaData.Response(HttpVersion.HTTP_2, 200, new HttpFields());
                 HeadersFrame responseFrame = new HeadersFrame(stream.getId(), response, null, false);
-                stream.headers(responseFrame, Callback.NOOP);
+                Callback.Completable completable = new Callback.Completable();
+                stream.headers(responseFrame, completable);
                 return new Stream.Listener.Adapter()
                 {
                     @Override
                     public void onData(Stream stream, DataFrame frame, Callback callback)
                     {
                         callback.succeeded();
-                        stream.data(new DataFrame(stream.getId(), ByteBuffer.allocate(16), true), Callback.NOOP);
-                        serverDataLatch.countDown();
+                        completable.thenRun(() ->
+                                stream.data(new DataFrame(stream.getId(), ByteBuffer.allocate(16), true), new Callback()
+                                {
+                                    @Override
+                                    public void succeeded()
+                                    {
+                                        serverDataLatch.countDown();
+                                    }
+                                }));
                     }
 
                     @Override
-                    public void onReset(Stream stream, ResetFrame frame)
+                    public void onReset(Stream s, ResetFrame frame)
                     {
                         // Simulate that there is pending data to send.
-                        stream.data(new DataFrame(stream.getId(), ByteBuffer.allocate(16), true), new Callback()
+                        IStream stream = (IStream)s;
+                        stream.getSession().frames(stream, new Callback()
                         {
                             @Override
                             public void failed(Throwable x)
                             {
                                 serverResetLatch.countDown();
                             }
-                        });
+                        }, new DataFrame(s.getId(), ByteBuffer.allocate(16), true));
                     }
                 };
             }
@@ -171,6 +186,7 @@ public class StreamResetTest extends AbstractTest
             @Override
             public void onData(Stream stream, DataFrame frame, Callback callback)
             {
+                callback.succeeded();
                 stream1DataLatch.countDown();
             }
         });
@@ -186,6 +202,7 @@ public class StreamResetTest extends AbstractTest
             @Override
             public void onData(Stream stream, DataFrame frame, Callback callback)
             {
+                callback.succeeded();
                 stream2DataLatch.countDown();
             }
         });
@@ -347,5 +364,91 @@ public class StreamResetTest extends AbstractTest
         });
 
         Assert.assertTrue(dataLatch.await(5, TimeUnit.SECONDS));
+    }
+
+    @Test
+    public void testClientResetConsumesQueuedData() throws Exception
+    {
+        start(new EmptyHttpServlet());
+
+        Session client = newClient(new Session.Listener.Adapter());
+        MetaData.Request request = newRequest("GET", new HttpFields());
+        HeadersFrame frame = new HeadersFrame(request, null, false);
+        FuturePromise<Stream> promise = new FuturePromise<>();
+        client.newStream(frame, promise, new Stream.Listener.Adapter());
+        Stream stream = promise.get(5, TimeUnit.SECONDS);
+        ByteBuffer data = ByteBuffer.allocate(FlowControlStrategy.DEFAULT_WINDOW_SIZE);
+        CountDownLatch dataLatch = new CountDownLatch(1);
+        stream.data(new DataFrame(stream.getId(), data, false), new Callback()
+        {
+            @Override
+            public void succeeded()
+            {
+                dataLatch.countDown();
+            }
+        });
+        // The server does not read the data, so the flow control window should be zero.
+        Assert.assertTrue(dataLatch.await(5, TimeUnit.SECONDS));
+        Assert.assertEquals(0, ((ISession)client).updateSendWindow(0));
+
+        // Now reset the stream.
+        stream.reset(new ResetFrame(stream.getId(), ErrorCode.CANCEL_STREAM_ERROR.code), Callback.NOOP);
+
+        // Wait for the server to receive the reset and process
+        // it, and for the client to process the window updates.
+        Thread.sleep(1000);
+
+        Assert.assertThat(((ISession)client).updateSendWindow(0), Matchers.greaterThan(0));
+    }
+
+    @Test
+    public void testServerExceptionConsumesQueuedData() throws Exception
+    {
+        try (StacklessLogging suppressor = new StacklessLogging(ServletHandler.class))
+        {
+            start(new HttpServlet()
+            {
+                @Override
+                protected void service(HttpServletRequest request, HttpServletResponse response) throws ServletException, IOException
+                {
+                    try
+                    {
+                        // Wait to let the data sent by the client to be queued.
+                        Thread.sleep(1000);
+                        throw new IllegalStateException("explictly_thrown_by_test");
+                    }
+                    catch (InterruptedException e)
+                    {
+                        throw new InterruptedIOException();
+                    }
+                }
+            });
+
+            Session client = newClient(new Session.Listener.Adapter());
+            MetaData.Request request = newRequest("GET", new HttpFields());
+            HeadersFrame frame = new HeadersFrame(request, null, false);
+            FuturePromise<Stream> promise = new FuturePromise<>();
+            client.newStream(frame, promise, new Stream.Listener.Adapter());
+            Stream stream = promise.get(5, TimeUnit.SECONDS);
+            ByteBuffer data = ByteBuffer.allocate(FlowControlStrategy.DEFAULT_WINDOW_SIZE);
+            CountDownLatch dataLatch = new CountDownLatch(1);
+            stream.data(new DataFrame(stream.getId(), data, false), new Callback()
+            {
+                @Override
+                public void succeeded()
+                {
+                    dataLatch.countDown();
+                }
+            });
+            // The server does not read the data, so the flow control window should be zero.
+            Assert.assertTrue(dataLatch.await(5, TimeUnit.SECONDS));
+            Assert.assertEquals(0, ((ISession)client).updateSendWindow(0));
+
+            // Wait for the server process the exception, and
+            // for the client to process the window updates.
+            Thread.sleep(2000);
+
+            Assert.assertThat(((ISession)client).updateSendWindow(0), Matchers.greaterThan(0));
+        }
     }
 }

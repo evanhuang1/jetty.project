@@ -22,6 +22,7 @@ public class Jetty
 {
     public static final String VERSION;
     public static final String POWERED_BY;
+    public static final boolean STABLE;
 
     static
     {
@@ -31,9 +32,12 @@ public class Jetty
                 pkg.getImplementationVersion() != null)
             VERSION = pkg.getImplementationVersion();
         else
-            VERSION = System.getProperty("jetty.version", "9.3.z-SNAPSHOT");
-        
+            VERSION = System.getProperty("jetty.version", "9.4.z-SNAPSHOT");
+
         POWERED_BY="<a href=\"http://eclipse.org/jetty\">Powered by Jetty:// "+VERSION+"</a>";
+
+        // Show warning when RC# or M# is in version string
+        STABLE = !VERSION.matches("^.*\\.(RC|M)[0-9]+$");
     }
 
     private Jetty()

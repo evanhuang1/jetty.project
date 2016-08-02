@@ -77,39 +77,25 @@ public class JettyWebXmlConfiguration extends AbstractConfiguration
                 jetty=web_inf.addPath("web-jetty.xml");
 
             if(jetty.exists())
-            {
-                // No server classes while configuring
-                String[] old_server_classes = context.getServerClasses();
+            {             
+                if(LOG.isDebugEnabled())
+                    LOG.debug("Configure: "+jetty);
+
+                Object xml_attr=context.getAttribute(XML_CONFIGURATION);
+                context.removeAttribute(XML_CONFIGURATION);
+                final XmlConfiguration jetty_config = xml_attr instanceof XmlConfiguration
+                    ?(XmlConfiguration)xml_attr
+                    :new XmlConfiguration(jetty.getURI().toURL());
+                setupXmlConfiguration(jetty_config, web_inf);
+                
                 try
                 {
-                    context.setServerClasses(null);
-                    if(LOG.isDebugEnabled())
-                        LOG.debug("Configure: "+jetty);
-
-                    XmlConfiguration jetty_config = (XmlConfiguration)context.getAttribute(XML_CONFIGURATION);
-
-                    if (jetty_config==null)
-                    {
-                        jetty_config=new XmlConfiguration(jetty.getURL());
-                    }
-                    else
-                    {
-                        context.removeAttribute(XML_CONFIGURATION);
-                    }
-                    setupXmlConfiguration(jetty_config, web_inf);
-                    try
-                    {
-                        jetty_config.configure(context);
-                    }
-                    catch (ClassNotFoundException e)
-                    {
-                        LOG.warn("Unable to process jetty-web.xml", e);
-                    }
+                    WebAppClassLoader.runWithServerClassAccess(()->{jetty_config.configure(context);return null;});
                 }
-                finally
+                catch(Exception e)
                 {
-                    if (old_server_classes != null)
-                        context.setServerClasses(old_server_classes);
+                    LOG.warn("Error applying {}",jetty);
+                    throw e;
                 }
             }
         }
@@ -125,6 +111,6 @@ public class JettyWebXmlConfiguration extends AbstractConfiguration
     {
         Map<String,String> props = jetty_config.getProperties();
         // TODO - should this be an id rather than a property?
-        props.put(PROPERTY_THIS_WEB_INF_URL, String.valueOf(web_inf.getURL()));
+        props.put(PROPERTY_THIS_WEB_INF_URL, String.valueOf(web_inf.getURI()));
     }
 }

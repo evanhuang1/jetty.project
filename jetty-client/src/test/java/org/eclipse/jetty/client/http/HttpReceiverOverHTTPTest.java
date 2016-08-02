@@ -30,6 +30,7 @@ import org.eclipse.jetty.client.HttpExchange;
 import org.eclipse.jetty.client.HttpRequest;
 import org.eclipse.jetty.client.HttpResponseException;
 import org.eclipse.jetty.client.Origin;
+import org.eclipse.jetty.client.api.Connection;
 import org.eclipse.jetty.client.api.Response;
 import org.eclipse.jetty.client.util.FutureResponseListener;
 import org.eclipse.jetty.http.HttpFields;
@@ -60,6 +61,7 @@ public class HttpReceiverOverHTTPTest
         client = new HttpClient();
         client.start();
         destination = new HttpDestinationOverHTTP(client, new Origin("http", "localhost", 8080));
+        destination.start();
         endPoint = new ByteArrayEndPoint();
         connection = new HttpConnectionOverHTTP(endPoint, destination, new Promise.Adapter<>());
         endPoint.setConnection(connection);
@@ -168,7 +170,9 @@ public class HttpReceiverOverHTTPTest
         HttpExchange exchange = newExchange();
         FutureResponseListener listener = (FutureResponseListener)exchange.getResponseListeners().get(0);
         connection.getHttpChannel().receive();
-        // Simulate an idle timeout
+        // ByteArrayEndPoint has an idle timeout of 0 by default,
+        // so to simulate an idle timeout is enough to wait a bit.
+        Thread.sleep(100);
         connection.onIdleExpired();
 
         try
@@ -235,7 +239,7 @@ public class HttpReceiverOverHTTPTest
             }
         };
         endPoint.setConnection(connection);
-
+        
         // Partial response to trigger the call to fillInterested().
         endPoint.addInput("" +
                 "HTTP/1.1 200 OK\r\n" +

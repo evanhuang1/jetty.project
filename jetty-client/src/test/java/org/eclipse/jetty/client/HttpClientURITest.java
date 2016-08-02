@@ -20,6 +20,7 @@ package org.eclipse.jetty.client;
 
 import java.io.IOException;
 import java.net.URLEncoder;
+import java.util.Locale;
 import java.util.concurrent.TimeUnit;
 
 import javax.servlet.ServletException;
@@ -28,6 +29,7 @@ import javax.servlet.http.HttpServletResponse;
 
 import org.eclipse.jetty.client.api.ContentResponse;
 import org.eclipse.jetty.client.api.Request;
+import org.eclipse.jetty.http.HttpMethod;
 import org.eclipse.jetty.http.HttpStatus;
 import org.eclipse.jetty.server.handler.AbstractHandler;
 import org.eclipse.jetty.util.Fields;
@@ -445,7 +447,7 @@ public class HttpClientURITest extends AbstractHttpClientServerTest
         });
 
         ContentResponse response = client.newRequest("localhost", connector.getLocalPort())
-                .scheme(scheme.toUpperCase())
+                .scheme(scheme.toUpperCase(Locale.ENGLISH))
                 .timeout(5, TimeUnit.SECONDS)
                 .send();
 
@@ -468,6 +470,37 @@ public class HttpClientURITest extends AbstractHttpClientServerTest
                 .scheme(scheme)
                 .timeout(5, TimeUnit.SECONDS)
                 .send();
+
+        Assert.assertEquals(HttpStatus.OK_200, response.getStatus());
+    }
+
+    @Test
+    public void testAsteriskFormTarget() throws Exception
+    {
+        start(new AbstractHandler()
+        {
+            @Override
+            public void handle(String target, org.eclipse.jetty.server.Request baseRequest, HttpServletRequest request, HttpServletResponse response) throws IOException, ServletException
+            {
+                baseRequest.setHandled(true);
+                Assert.assertEquals("*", target);
+                Assert.assertEquals("*", request.getPathInfo());
+            }
+        });
+
+        Request request = client.newRequest("localhost", connector.getLocalPort())
+                .method(HttpMethod.OPTIONS)
+                .scheme(scheme)
+                .path("*")
+                .timeout(5, TimeUnit.SECONDS);
+
+        Assert.assertEquals("*", request.getPath());
+        Assert.assertNull(request.getQuery());
+        Fields params = request.getParams();
+        Assert.assertEquals(0, params.getSize());
+        Assert.assertNull(request.getURI());
+
+        ContentResponse response = request.send();
 
         Assert.assertEquals(HttpStatus.OK_200, response.getStatus());
     }

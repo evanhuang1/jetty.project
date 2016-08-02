@@ -19,6 +19,7 @@
 package org.eclipse.jetty.server.session;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
 
 import java.io.IOException;
@@ -32,21 +33,20 @@ import javax.servlet.http.HttpSession;
 import org.eclipse.jetty.client.HttpClient;
 import org.eclipse.jetty.client.api.ContentResponse;
 import org.eclipse.jetty.server.Request;
-import org.eclipse.jetty.server.SessionManager;
+import org.eclipse.jetty.servlet.ServletContextHandler;
 import org.junit.Test;
 
 /**
  * AbstractLocalSessionScavengingTest
  */
-public abstract class AbstractLocalSessionScavengingTest
+public abstract class AbstractLocalSessionScavengingTest extends AbstractTestBase
 {
-    public abstract AbstractTestServer createServer(int port, int max, int scavenge);
 
     public void pause(int scavengePeriod)
     {
         try
         {
-            Thread.sleep(scavengePeriod * 2500L);
+            Thread.sleep(scavengePeriod * 1000L);
         }
         catch (InterruptedException e)
         {
@@ -59,17 +59,19 @@ public abstract class AbstractLocalSessionScavengingTest
     {
         String contextPath = "";
         String servletMapping = "/server";
-        int inactivePeriod = 1;
-        int scavengePeriod = 2;
-        AbstractTestServer server1 = createServer(0, inactivePeriod, scavengePeriod);
-        server1.addContext(contextPath).addServlet(TestServlet.class, servletMapping);
+        int inactivePeriod = 4;
+        int scavengePeriod = 1;
+        AbstractTestServer server1 = createServer(0, inactivePeriod, scavengePeriod, SessionCache.NEVER_EVICT);
+        ServletContextHandler context1 = server1.addContext(contextPath);
+        context1.addServlet(TestServlet.class, servletMapping);
 
         try
         {
             server1.start();
             int port1 = server1.getPort();
-            AbstractTestServer server2 = createServer(0, inactivePeriod, scavengePeriod * 3);
-            server2.addContext(contextPath).addServlet(TestServlet.class, servletMapping);
+            AbstractTestServer server2 = createServer(0, inactivePeriod, scavengePeriod * 2, SessionCache.NEVER_EVICT);
+            ServletContextHandler context2 = server2.addContext(contextPath);
+            context2.addServlet(TestServlet.class, servletMapping);
 
             try
             {
@@ -90,28 +92,33 @@ public abstract class AbstractLocalSessionScavengingTest
                     assertTrue(sessionCookie != null);
                     // Mangle the cookie, replacing Path with $Path, etc.
                     sessionCookie = sessionCookie.replaceFirst("(\\W)(P|p)ath=", "$1\\$Path=");
+                    SessionHandler m1 = context1.getSessionHandler();
+                    assertEquals(1,  m1.getSessionsCreated());
 
                     // Be sure the session is also present in node2
                     org.eclipse.jetty.client.api.Request request = client.newRequest(urls[1] + "?action=test");
                     request.header("Cookie", sessionCookie);
                     ContentResponse response2 = request.send();
                     assertEquals(HttpServletResponse.SC_OK,response2.getStatus());
+                    SessionHandler m2 = context2.getSessionHandler();
 
+                    // Wait for the scavenger to run on node1
+                    pause(inactivePeriod+(2*scavengePeriod));
 
-                    // Wait for the scavenger to run on node1, waiting 2.5 times the scavenger period
-                    pause(scavengePeriod);
+                    assertEquals(1,  m1.getSessionsCreated());
 
                     // Check that node1 does not have any local session cached
                     request = client.newRequest(urls[0] + "?action=check");
                     request.header("Cookie", sessionCookie);
                     response1 = request.send();
                     assertEquals(HttpServletResponse.SC_OK,response1.getStatus());
+                    
+                    assertEquals(1,  m1.getSessionsCreated());
 
-
-                    // Wait for the scavenger to run on node2, waiting 2 times the scavenger period
+                    // Wait for the scavenger to run on node2, waiting 3 times the scavenger period
                     // This ensures that the scavenger on node2 runs at least once.
-                    pause(scavengePeriod);
-
+                    pause(inactivePeriod+(2*scavengePeriod));
+                    
                     // Check that node2 does not have any local session cached
                     request = client.newRequest(urls[1] + "?action=check");
                     request.header("Cookie", sessionCookie);
@@ -136,8 +143,6 @@ public abstract class AbstractLocalSessionScavengingTest
 
     public static class TestServlet extends HttpServlet
     {
-        private SessionManager sessionManager;
-
         @Override
         protected void doGet(HttpServletRequest request, HttpServletResponse httpServletResponse) throws ServletException, IOException
         {
@@ -146,13 +151,12 @@ public abstract class AbstractLocalSessionScavengingTest
             {
                 HttpSession session = request.getSession(true);
                 session.setAttribute("test", "test");
-                this.sessionManager = ((Request)request).getSessionManager();
             }
             else if ("test".equals(action))
             {
                 HttpSession session = request.getSession(false);
+                assertNotNull(session);
                 session.setAttribute("test", "test");
-                this.sessionManager = ((Request)request).getSessionManager();
             }
             else if ("check".equals(action))
             {

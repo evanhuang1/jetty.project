@@ -32,20 +32,10 @@ import org.junit.Test;
  */
 public class SessionInvalidateAndCreateTest extends AbstractSessionInvalidateAndCreateTest
 {
-
-    static GCloudSessionTestSupport _testSupport;
-
-    @BeforeClass
-    public static void setup () throws Exception
-    {
-        _testSupport = new GCloudSessionTestSupport();
-        _testSupport.setUp();
-    }
-
     @AfterClass
     public static void teardown () throws Exception
     {
-        _testSupport.tearDown();
+        GCloudTestSuite.__testSupport.deleteSessions();
     }
 
 
@@ -53,9 +43,9 @@ public class SessionInvalidateAndCreateTest extends AbstractSessionInvalidateAnd
      * @see org.eclipse.jetty.server.session.AbstractSessionInvalidateAndCreateTest#createServer(int, int, int)
      */
     @Override
-    public AbstractTestServer createServer(int port, int max, int scavenge)
+    public AbstractTestServer createServer(int port, int max, int scavenge, int evictionPolicy)
     {
-        return  new GCloudTestServer(port, max, scavenge, _testSupport.getConfiguration());
+        return  new GCloudTestServer(port, max, scavenge, evictionPolicy);
     }
 
     @Test

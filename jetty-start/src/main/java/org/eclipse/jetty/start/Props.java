@@ -227,8 +227,6 @@ public final class Props implements Iterable<Prop>
                 throw new PropsException(err.toString());
             }
 
-            seenStack.push(property);
-
             // find property name
             expanded.append(str.subSequence(offset,mat.start()));
             // get property value
@@ -241,7 +239,9 @@ public final class Props implements Iterable<Prop>
             else
             {
                 // recursively expand
+                seenStack.push(property);
                 value = expand(value,seenStack);
+                seenStack.pop();
                 expanded.append(value);
             }
             // update offset
@@ -374,5 +374,24 @@ public final class Props implements Iterable<Prop>
     {
         System.setProperty(key,value);
         sysPropTracking.add(key);
+    }
+    
+    @Override
+    public String toString()
+    {
+        return props.toString();
+    }
+
+    public void remove(String key, String value, String source)
+    {
+        Prop prop = props.get(key);
+        
+        if (prop!=null && value.equals(prop.value) && source.equals(prop.origin))
+        {
+            if (prop.overrides==null)
+                props.remove(key);
+            else
+                props.put(key,prop.overrides);
+        }
     }
 }

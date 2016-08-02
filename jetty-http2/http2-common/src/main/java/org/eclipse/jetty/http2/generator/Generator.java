@@ -80,8 +80,13 @@ public class Generator
         generators[frame.getType().getType()].generate(lease, frame);
     }
 
-    public void data(ByteBufferPool.Lease lease, DataFrame frame, int maxLength)
+    public int data(ByteBufferPool.Lease lease, DataFrame frame, int maxLength)
     {
-        dataGenerator.generate(lease, frame, maxLength);
+        return dataGenerator.generate(lease, frame, maxLength);
+    }
+
+    public void setMaxHeaderListSize(int value)
+    {
+        hpackEncoder.setMaxHeaderListSize(value);
     }
 }
