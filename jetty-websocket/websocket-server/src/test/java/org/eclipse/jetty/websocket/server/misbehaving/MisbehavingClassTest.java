@@ -21,6 +21,7 @@ package org.eclipse.jetty.websocket.server.misbehaving;
 import static org.hamcrest.Matchers.instanceOf;
 import static org.hamcrest.Matchers.is;
 import static org.junit.Assert.assertThat;
+
 import java.util.concurrent.TimeUnit;
 
 import org.eclipse.jetty.toolchain.test.EventQueue;
@@ -35,10 +36,6 @@ import org.eclipse.jetty.websocket.server.SimpleServletServer;
 import org.junit.AfterClass;
 import org.junit.BeforeClass;
 import org.junit.Test;
-
-import static org.hamcrest.Matchers.instanceOf;
-import static org.hamcrest.Matchers.is;
-import static org.junit.Assert.assertThat;
 
 /**
  * Testing badly behaving Socket class implementations to get the best
@@ -67,11 +64,10 @@ public class MisbehavingClassTest
     public void testListenerRuntimeOnConnect() throws Exception
     {
         try (IBlockheadClient client = new BlockheadClient(server.getServerUri());
-             StacklessLogging scope = new StacklessLogging(ListenerRuntimeOnConnectSocket.class, WebSocketSession.class))
+             StacklessLogging scope = new StacklessLogging(ListenerRuntimeOnConnectSocket.class))
         {
             client.setProtocols("listener-runtime-connect");
             client.setTimeout(1,TimeUnit.SECONDS);
-            try (StacklessLogging scope = new StacklessLogging(BadSocketsServlet.class))
             ListenerRuntimeOnConnectSocket socket = badSocketsServlet.listenerRuntimeConnect;
             socket.reset();
 
@@ -102,11 +98,10 @@ public class MisbehavingClassTest
     public void testAnnotatedRuntimeOnConnect() throws Exception
     {
         try (IBlockheadClient client = new BlockheadClient(server.getServerUri());
-             StacklessLogging scope = new StacklessLogging(AnnotatedRuntimeOnConnectSocket.class, WebSocketSession.class))
+             StacklessLogging scope = new StacklessLogging(AnnotatedRuntimeOnConnectSocket.class))
         {
             client.setProtocols("annotated-runtime-connect");
             client.setTimeout(1,TimeUnit.SECONDS);
-            try (StacklessLogging scope = new StacklessLogging(BadSocketsServlet.class))
             AnnotatedRuntimeOnConnectSocket socket = badSocketsServlet.annotatedRuntimeConnect;
             socket.reset();
 
